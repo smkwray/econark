@@ -22,7 +22,7 @@ fetchr-parity/
 fetchr/docs/agent_quickstart.md
 fetchr/docs/remote_parity_testing.md
 fetchr/docs/interpol_exact_replication.md
-mascots/mascots.md
+mascots/
 
 # Optional project-specific files
 dass/events.py

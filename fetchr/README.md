@@ -3,9 +3,9 @@
 (/ˈfɛtʃ.ər/)
 
 <p align="center">
-  <img src="../mascots/dog.png" width="120" alt="The Fetcher" />
+  <img src="../.github/images/dog.png" width="120" alt="The Fetcher" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="../mascots/butterfly.png" width="120" alt="The Interpolator" />
+  <img src="../.github/images/butterfly.png" width="120" alt="The Interpolator" />
 </p>
 
 <p align="center"><em>The Fetcher &nbsp;&bull;&nbsp; The Interpolator</em></p>

@@ -3,9 +3,9 @@
 (/dɪˈflʌm.əks/)
 
 <p align="center">
-  <img src="../mascots/dolphin.png" width="120" alt="The Navigator" />
+  <img src="../.github/images/dolphin.png" width="120" alt="The Navigator" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="../mascots/octopus.png" width="120" alt="The Compressor" />
+  <img src="../.github/images/octopus.png" width="120" alt="The Compressor" />
 </p>
 
 <p align="center"><em>The Navigator &nbsp;&bull;&nbsp; The Compressor</em></p>

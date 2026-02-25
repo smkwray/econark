@@ -3,13 +3,13 @@
 (/dæs/)
 
 <p align="center">
-  <img src="../mascots/mole.png" width="100" alt="The IV Miner" />
+  <img src="../.github/images/mole.png" width="100" alt="The IV Miner" />
   &nbsp;&nbsp;
-  <img src="../mascots/pig.png" width="100" alt="The Estimator" />
+  <img src="../.github/images/pig.png" width="100" alt="The Estimator" />
   &nbsp;&nbsp;
-  <img src="../mascots/fox.png" width="100" alt="The Causal Navigator" />
+  <img src="../.github/images/fox.png" width="100" alt="The Causal Navigator" />
   &nbsp;&nbsp;
-  <img src="../mascots/owl.png" width="100" alt="The Evaluator" />
+  <img src="../.github/images/owl.png" width="100" alt="The Evaluator" />
 </p>
 
 <p align="center"><em>The IV Miner &nbsp;&bull;&nbsp; The Estimator &nbsp;&bull;&nbsp; The Causal Navigator &nbsp;&bull;&nbsp; The Evaluator</em></p>

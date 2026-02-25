@@ -3,9 +3,9 @@
 (/ˈkoʊ.floʊ/)
 
 <p align="center">
-  <img src="../mascots/geese.png" width="140" alt="The Flock" />
+  <img src="../.github/images/geese.png" width="140" alt="The Flock" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="../mascots/spider.png" width="100" alt="The Weaver" />
+  <img src="../.github/images/spider.png" width="100" alt="The Weaver" />
 </p>
 
 <p align="center"><em>The Flock &nbsp;&bull;&nbsp; The Weaver</em></p>

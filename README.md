@@ -20,7 +20,7 @@ fetchr  ──>  coflow
 (/ˈfɛtʃ.ər/)
 
 <p align="center">
-  <img src="mascots/dog.png" width="120" alt="fetchr mascot — The Fetcher" />
+  <img src=".github/images/dog.png" width="120" alt="fetchr mascot — The Fetcher" />
 </p>
 
 <p align="center"><em>The Fetcher — retrieves your data so you don't have to.</em></p>
@@ -48,7 +48,7 @@ More: `fetchr/README.md`
 (/dæs/)
 
 <p align="center">
-  <img src="mascots/mole.png" width="120" alt="dass mascot — The IV Miner" />
+  <img src=".github/images/mole.png" width="120" alt="dass mascot — The IV Miner" />
 </p>
 
 <p align="center"><em>The IV Miner — causal design and estimation core.</em></p>
@@ -76,7 +76,7 @@ More: `dass/README.md` and `dass/overview.md`
 (/dɪˈflʌm.əks/)
 
 <p align="center">
-  <img src="mascots/octopus.png" width="120" alt="dflmx mascot — The Compressor" />
+  <img src=".github/images/octopus.png" width="120" alt="dflmx mascot — The Compressor" />
 </p>
 
 <p align="center"><em>The Compressor — factor synthesis and contract export layer.</em></p>
@@ -105,7 +105,7 @@ More: `dflmx/README.md`
 (/ˈkoʊ.floʊ/)
 
 <p align="center">
-  <img src="mascots/geese.png" width="140" alt="coflow mascot — The Flock" />
+  <img src=".github/images/geese.png" width="140" alt="coflow mascot — The Flock" />
 </p>
 
 <p align="center"><em>The Flock — mixed-frequency reduced-form screening.</em></p>
@@ -138,7 +138,7 @@ econark/
 ├── dass/
 ├── dflmx/
 ├── coflow/
-└── mascots/
+└── .github/images/
 ```
 
 Public documentation scope for setup/features is:
