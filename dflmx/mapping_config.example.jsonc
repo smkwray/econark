@@ -1,0 +1,99 @@
+{
+  // Optional override file for DFLMX question/hypothesis mapping.
+  // Copy into mapping_config.json and keep valid JSON (remove comments).
+  // Use when QUESTION_SOURCE is "manual" or when overriding default rules.
+
+  "question_source": "manual",
+
+  // Manual treatment shortlist used when question_source == "manual".
+  // Replace with your treatment variable names.
+  "manual_treatments": [
+    "your_treatment_1",
+    "your_treatment_2"
+  ],
+
+  // Candidate qend outcome columns available to propagation.
+  // Replace with your outcome column names.
+  "outcome_qend_cols": [
+    "qend__your_outcome_1",
+    "qend__your_outcome_2",
+    "qend__your_outcome_3"
+  ],
+
+  // Two accepted patterns:
+  // 1) {"outcomes": [...], "horizons": [...]}
+  // 2) {"outcome_name": [h1, h2, ...], ...}
+  "manual_questions": {
+    "your_treatment_1": {
+      "outcomes": [
+        "your_outcome_1",
+        "your_outcome_2",
+        "your_outcome_3"
+      ],
+      "horizons": [
+        1,
+        2,
+        4
+      ]
+    },
+    "your_treatment_2": {
+      "your_outcome_1": [
+        0,
+        1,
+        2
+      ],
+      "your_outcome_2": [
+        0,
+        1,
+        2
+      ]
+    }
+  },
+
+  // Optional hypothesis override. Omit to keep defaults in config_dflmx.py.
+  // Define your main hypothesis here.
+  "hypothesis_rules": [
+    {
+      "id": "H1",
+      "label": "Describe your first hypothesis",
+      "treatments": [
+        "your_treatment_1"
+      ],
+      "outcomes": [
+        "your_outcome_1",
+        "your_outcome_2",
+        "your_outcome_3"
+      ]
+    }
+  ],
+
+  // Organize hypotheses into logical groups for the scorecard.
+  "hypothesis_scorecard_groups": [
+    {
+      "id": "H1",
+      "label": "Example hypothesis group",
+      "members": [
+        "H1"
+      ],
+      "notes": "Add your hypothesis group notes here."
+    }
+  ],
+
+  // Target outcome columns to report in the proposal.
+  // Maps to the qend columns defined above.
+  "target_outcomes": [
+    "qend__your_outcome_1",
+    "qend__your_outcome_2",
+    "qend__your_outcome_3"
+  ],
+
+  // Default hypothesis for exploratory treatment-outcome pairs not in hypothesis_rules.
+  "hypothesis_default_id": "H_other",
+  "hypothesis_default_label": "Exploratory treatment-outcome link",
+
+  // Order of hypotheses in output and scoring.
+  "hypothesis_priority_order": [
+    "H1",
+    "H_other"
+  ]
+}

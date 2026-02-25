@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Example local config for bridging interpol/config_interpol.py annual maps.
+
+Set INTERPOL_ROOT to your local interpol checkout, or run:
+
+python3 -B scripts/generate_interpol_local_configs.py \
+  --fredfetch-path "/path/to/interpol/fredfetch.py" \
+  --config-interpol-path "/path/to/interpol/config_interpol.py"
+"""
+from __future__ import annotations
+
+import csv
+import importlib.util
+from pathlib import Path
+from types import ModuleType
+
+
+_THIS_FILE = Path(__file__).resolve()
+FETCHR_ROOT = _THIS_FILE.parent if (_THIS_FILE.parent / "run").exists() else _THIS_FILE.parents[1]
+INTERPOL_ROOT = Path("/path/to/interpol")
+INTERPOL_CONFIG_PATH = INTERPOL_ROOT / "config_interpol.py"
+ANNUAL_INPUT_PATH = INTERPOL_ROOT / "fetch" / "fetch_data_annual.csv"
+
+OUT_DIR = FETCHR_ROOT / "out" / "interpol_bridge_local"
+RAW_DIR = OUT_DIR / "raw"
+CLEAN_DIR = OUT_DIR / "clean"
+INTERP_DIR = OUT_DIR / "interp"
+DERIVED_DIR = OUT_DIR / "derived"
+MIXED_DIR = OUT_DIR / "mixed"
+
+FETCH_SUMMARY_CSV = OUT_DIR / "fetch_summary.csv"
+INTERP_SUMMARY_CSV = OUT_DIR / "interpolation_summary.csv"
+INTERP_PREP_SUMMARY_CSV = OUT_DIR / "interpolation_prep_summary.csv"
+TABLE_EXPORT_SUMMARY_CSV = OUT_DIR / "table_export_summary.csv"
+VALIDATION_REPORT_JSON = OUT_DIR / "config_validation.json"
+
+FRED_API_KEY_ENV = "FRED_API_KEY"
+FAIL_FAST = True
+
+SERIES_PACKS_DIR = FETCHR_ROOT / "examples" / "series_packs"
+SERIES_PACKS = ["interpol_fred_raw.local.json"]
+SERIES = []
+
+CLEANING_TASKS = []
+EVALUATION_TASKS = []
+DERIVED_SERIES = []
+MIXED_OUTPUT_TASKS = []
+METHOD_PANEL_TASKS = []
+MIXED_PANEL_TASKS = []
+
+OUTPUT_CONTRACT_ENABLED = False
+OUTPUT_CONTRACT_STRICT = False
+OUTPUT_ALIASES = []
+OUTPUT_CONTRACT_REQUIRED_FILES = []
+
+
+def _load_interpol_config(path: Path) -> ModuleType:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing config_interpol.py: {path}")
+    spec = importlib.util.spec_from_file_location("fetchr_interpol_cfg", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load config module from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[misc]
+    return mod
+
+
+def _detect_date_col(path: Path) -> str:
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        header = next(csv.reader(fh), [])
+    if "date" in header:
+        return "date"
+    if header and str(header[0]).strip():
+        return str(header[0]).strip()
+    return "Unnamed: 0"
+
+
+def _benchmark_to_conversion(token: str | None) -> str:
+    value = str(token or "").strip().lower()
+    if value == "sum":
+        return "sum"
+    if value == "mean":
+        return "mean"
+    return "last"
+
+
+_INTERPOL = _load_interpol_config(INTERPOL_CONFIG_PATH)
+_ANNUAL_DATE_COL = _detect_date_col(ANNUAL_INPUT_PATH)
+_A2M = dict(getattr(_INTERPOL, "ANNUAL_INTERPOLATE", {}) or {})
+_A2Q = dict(getattr(_INTERPOL, "ANNUAL_INTERPOLATE_QUARTERLY", {}) or {})
+
+INTERPOLATION_TASKS = []
+for _name, _meta in _A2M.items():
+    _target = (_meta or {}).get("target_range")
+    _conversion = _benchmark_to_conversion((_meta or {}).get("benchmark"))
+    INTERPOLATION_TASKS.append(
+        {
+            "name": f"{_name}__a2m",
+            "input_path": str(ANNUAL_INPUT_PATH),
+            "date_col": _ANNUAL_DATE_COL,
+            "value_col": _name,
+            "method": "annual_to_monthly_denton",
+            "conversion": _conversion,
+            "low_agg": "last",
+            "denton_mode": "prior",
+            "denton_power": 2,
+            "apply_constraints": False,
+            "target_range": _target,
+            "edge_fill": "flat",
+        }
+    )
+
+for _name, _meta in _A2Q.items():
+    _target = (_meta or {}).get("target_range")
+    _conversion = _benchmark_to_conversion((_meta or {}).get("benchmark"))
+    INTERPOLATION_TASKS.append(
+        {
+            "name": f"{_name}__a2q",
+            "input_path": str(ANNUAL_INPUT_PATH),
+            "date_col": _ANNUAL_DATE_COL,
+            "value_col": _name,
+            "method": "annual_to_quarterly_denton",
+            "conversion": _conversion,
+            "low_agg": "last",
+            "denton_mode": "prior",
+            "denton_power": 2,
+            "apply_constraints": False,
+            "target_range": _target,
+            "edge_fill": "flat",
+        }
+    )
+
+TABLE_EXPORT_TASKS = [
+    {
+        "name": "annual_monthly",
+        "columns": [{"ref": f"{name}__a2m", "name": name} for name in list(_A2M.keys())],
+        "join_how": "outer",
+        "fill_method": "none",
+        "sort_columns": False,
+        "index_label": "date",
+        "output_csv": "annual_monthly.csv",
+    },
+    {
+        "name": "annual_quarterly",
+        "columns": [{"ref": f"{name}__a2q", "name": name} for name in list(_A2Q.keys())],
+        "join_how": "outer",
+        "fill_method": "none",
+        "sort_columns": False,
+        "index_label": "date",
+        "output_csv": "annual_quarterly.csv",
+    },
+]

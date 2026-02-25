@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Local-only interpol-like parity starter config.
+
+Usage:
+1. Copy this file to:
+   - examples/config_fetchr_interpol_like.local.py
+   or
+   - config_fetchr_interpol_like.local.py
+2. Fill in local input paths/task definitions for your staged interpol snapshot.
+3. Run:
+   python3 -B launcher.py --config examples/config_fetchr_interpol_like.local.py --stage all
+
+This file intentionally contains no bundled data paths.
+"""
+from pathlib import Path
+
+
+FETCHR_ROOT = Path(__file__).resolve().parents[1]
+OUT_DIR = FETCHR_ROOT / "out" / "interpol_like"
+LOG_DIR = FETCHR_ROOT / "logs" / "interpol_like"
+
+RAW_DIR = LOG_DIR / "raw"
+CLEAN_DIR = LOG_DIR / "clean"
+INTERP_DIR = LOG_DIR / "interp"
+DERIVED_DIR = LOG_DIR / "derived"
+MIXED_DIR = LOG_DIR / "mixed"
+
+PREP_SUMMARY_CSV = LOG_DIR / "prep_summary.csv"
+INTERP_SUMMARY_CSV = LOG_DIR / "interpolation_summary.csv"
+INTERP_PREV_SUMMARY_CSV = LOG_DIR / "interpolation_summary_prev.csv"
+DERIVED_SUMMARY_CSV = LOG_DIR / "derived_summary.csv"
+MIXED_SUMMARY_CSV = LOG_DIR / "mixed_summary.csv"
+TABLE_EXPORT_SUMMARY_CSV = LOG_DIR / "table_export_summary.csv"
+METHOD_PANEL_SUMMARY_CSV = LOG_DIR / "method_panel_summary.csv"
+MIXED_PANEL_TASK_SUMMARY_CSV = LOG_DIR / "mixed_panel_task_summary.csv"
+OUTPUT_CONTRACT_REPORT_JSON = LOG_DIR / "output_contract_report.json"
+CONFIG_VALIDATION_JSON = LOG_DIR / "config_validation.json"
+
+
+# Core task scaffolds (fill as needed)
+SERIES = []
+SERIES_REGISTRY = {}
+SERIES_PROFILES = {}
+
+FETCH_TASKS = []
+RAW_TRANSFORM_TASKS = []
+
+INTERPOLATION_PIPELINES = {}
+INTERPOLATION_POLICY_MATRIX = []
+INTERPOLATION_TASKS = []
+
+DERIVED_SERIES = []
+MIXED_OUTPUT_TASKS = []
+
+
+# Optional parity-oriented features (all generic, opt-in)
+TABLE_EXPORT_TASKS = []
+METHOD_PANEL_TASKS = []
+MIXED_PANEL_TASKS = []
+
+OUTPUT_CONTRACT_ENABLED = False
+OUTPUT_CONTRACT_STRICT = False
+OUTPUT_ALIASES = []
+OUTPUT_CONTRACT_REQUIRED_FILES = []

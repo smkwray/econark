@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "description": "Template only. Generate the full local pack from interpol/fredfetch.py.",
+    "generator": "python3 -B scripts/generate_interpol_local_configs.py --fredfetch-path /path/to/interpol/fredfetch.py --config-interpol-path /path/to/interpol/config_interpol.py"
+  },
+  "series": [
+    {
+      "name": "fed_funds",
+      "source": "fred",
+      "series_id": "FEDFUNDS",
+      "start_date": "1980-01-01",
+      "end_date": "2025-12-31",
+      "aggregation_method": "avg",
+      "frequency": "m"
+    }
+  ]
+}

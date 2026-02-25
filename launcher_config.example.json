@@ -1,0 +1,31 @@
+{
+  "defaults": {
+    "nice": 15,
+    "math_threads": 1,
+    "workers": null,
+    "set_blas_threads_if_missing": true,
+    "force_blas_threads": false
+  },
+  "modules": {
+    "fetchr": {
+      "workers": null,
+      "nice": 15,
+      "math_threads": 1
+    },
+    "dass": {
+      "workers": 16,
+      "nice": 15,
+      "math_threads": 1
+    },
+    "dflmx": {
+      "workers": 16,
+      "nice": 15,
+      "math_threads": 1
+    },
+    "coflow": {
+      "nice": 19,
+      "workers": null,
+      "math_threads": 1
+    }
+  }
+}

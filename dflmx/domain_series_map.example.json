@@ -1,0 +1,57 @@
+{
+  "UNRATE": [
+    "labor",
+    "credit_financial_conditions"
+  ],
+  "PAYEMS": [
+    "labor"
+  ],
+  "UEMPMEAN": [
+    "labor"
+  ],
+  "EMRATIO": [
+    "labor"
+  ],
+  "HOUST": [
+    "labor"
+  ],
+  "ICSA": [
+    "labor"
+  ],
+  "PCE": [
+    "consumption"
+  ],
+  "PCEDG": [
+    "consumption"
+  ],
+  "PCEND": [
+    "consumption"
+  ],
+  "PCEPI": [
+    "consumption"
+  ],
+  "PCEPILFE": [
+    "consumption"
+  ],
+  "PCESV": [
+    "consumption"
+  ],
+  "FEDFUNDS": [
+    "credit_financial_conditions"
+  ],
+  "M2": [
+    "credit_financial_conditions"
+  ],
+  "VIXCLS": [
+    "credit_financial_conditions"
+  ],
+  "BAA10Y": [
+    "credit_financial_conditions"
+  ],
+  "UNRATE_CUSTOM_1": [
+    "labor"
+  ],
+  "CONSUMPTION_CUSTOM_1": [
+    "consumption"
+  ]
+}

@@ -1,0 +1,14 @@
+# Runtime/output artifacts
+out/
+logs/
+
+# Local-only configs (may contain personal paths)
+*.local.py
+*.local.json
+examples/*.local.py
+examples/series_packs/*.local.json
+
+# Python cache/test artifacts
+__pycache__/
+.pytest_cache/
+*.pyc

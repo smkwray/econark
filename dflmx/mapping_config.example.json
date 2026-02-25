@@ -1,0 +1,73 @@
+{
+  "question_source": "manual",
+  "manual_treatments": [
+    "your_treatment_1",
+    "your_treatment_2"
+  ],
+  "outcome_qend_cols": [
+    "qend__your_outcome_1",
+    "qend__your_outcome_2",
+    "qend__your_outcome_3"
+  ],
+  "manual_questions": {
+    "your_treatment_1": {
+      "outcomes": [
+        "your_outcome_1",
+        "your_outcome_2",
+        "your_outcome_3"
+      ],
+      "horizons": [
+        1,
+        2,
+        4
+      ]
+    },
+    "your_treatment_2": {
+      "your_outcome_1": [
+        0,
+        1,
+        2
+      ],
+      "your_outcome_2": [
+        0,
+        1,
+        2
+      ]
+    }
+  },
+  "hypothesis_rules": [
+    {
+      "id": "H1",
+      "label": "Describe your first hypothesis",
+      "treatments": [
+        "your_treatment_1"
+      ],
+      "outcomes": [
+        "your_outcome_1",
+        "your_outcome_2",
+        "your_outcome_3"
+      ]
+    }
+  ],
+  "hypothesis_scorecard_groups": [
+    {
+      "id": "H1",
+      "label": "Example hypothesis group",
+      "members": [
+        "H1"
+      ],
+      "notes": "Add your hypothesis group notes here."
+    }
+  ],
+  "target_outcomes": [
+    "qend__your_outcome_1",
+    "qend__your_outcome_2",
+    "qend__your_outcome_3"
+  ],
+  "hypothesis_default_id": "H_other",
+  "hypothesis_default_label": "Exploratory treatment-outcome link",
+  "hypothesis_priority_order": [
+    "H1",
+    "H_other"
+  ]
+}

@@ -1,0 +1,53 @@
+# Runtime configs (created by copying *.example.py / *.example.json)
+dass/config_dass.py
+dass/config_id.py
+fetchr/config_fetchr.py
+dflmx/config_dflmx.py
+dflmx/config_dflmx_alt.py
+dflmx/mapping_config.json
+dflmx/domain_series_map.json
+coflow/config_*.py
+!coflow/config_example.py
+!coflow/config_example_mf.py
+launcher_config.json
+
+# Runtime outputs
+dass/out/
+dflmx/out/
+fetchr/out/
+coflow/results/
+
+# Internal development tooling (not part of the public repo)
+fetchr-parity/
+fetchr/docs/agent_quickstart.md
+fetchr/docs/remote_parity_testing.md
+fetchr/docs/interpol_exact_replication.md
+mascots/mascots.md
+
+# Optional project-specific files
+dass/events.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

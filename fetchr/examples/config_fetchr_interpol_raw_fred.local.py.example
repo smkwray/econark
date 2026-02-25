@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Example local config for fetching the full raw FRED set from interpol/fredfetch.py.
+
+This is a template only. Use the generator to create the local gitignored files:
+
+python3 -B scripts/generate_interpol_local_configs.py \
+  --fredfetch-path "/path/to/interpol/fredfetch.py" \
+  --config-interpol-path "/path/to/interpol/config_interpol.py"
+"""
+from pathlib import Path
+
+
+_THIS_FILE = Path(__file__).resolve()
+FETCHR_ROOT = _THIS_FILE.parent if (_THIS_FILE.parent / "run").exists() else _THIS_FILE.parents[1]
+
+OUT_DIR = FETCHR_ROOT / "out" / "interpol_raw_fred_local"
+RAW_DIR = OUT_DIR / "raw"
+CLEAN_DIR = OUT_DIR / "clean"
+INTERP_DIR = OUT_DIR / "interp"
+DERIVED_DIR = OUT_DIR / "derived"
+MIXED_DIR = OUT_DIR / "mixed"
+
+FETCH_SUMMARY_CSV = OUT_DIR / "fetch_summary.csv"
+VALIDATION_REPORT_JSON = OUT_DIR / "config_validation.json"
+
+FRED_API_KEY_ENV = "FRED_API_KEY"
+FAIL_FAST = True
+
+SERIES_PACKS_DIR = FETCHR_ROOT / "examples" / "series_packs"
+SERIES_PACKS = ["interpol_fred_raw.local.json"]
+SERIES = []
+
+INTERPOLATION_TASKS = []
+CLEANING_TASKS = []
+EVALUATION_TASKS = []
+DERIVED_SERIES = []
+MIXED_OUTPUT_TASKS = []
+TABLE_EXPORT_TASKS = []
+METHOD_PANEL_TASKS = []
+MIXED_PANEL_TASKS = []
+
+OUTPUT_CONTRACT_ENABLED = False
+OUTPUT_CONTRACT_STRICT = False
+OUTPUT_ALIASES = []
+OUTPUT_CONTRACT_REQUIRED_FILES = []
