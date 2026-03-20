@@ -539,6 +539,17 @@ IDKIT_ASSUMPTIONS_MD = "id_assumptions.md"
 # Outputs
 # --------------------------------------------------------------------
 
+# Change OUT_DIR to relocate the standard DASS output tree.
+# The launcher keeps downstream prep/design/estimator paths aligned with this
+# root unless you explicitly override the per-stage locations below.
 OUT_DIR = "dass/out"
 OUT_CSV = "stacked_quarterly.csv"
 OUT_META_MD = "stacked_quarterly_meta.md"
+DESIGN_OUT_DIR = f"{OUT_DIR}/design"
+CF_OUT_DIR = f"{OUT_DIR}/cf"
+TMLE_OUT_DIR = f"{OUT_DIR}/tmle"
+LP_OUT_DIR = f"{OUT_DIR}/lp"
+DML_OUT_DIR = f"{OUT_DIR}/dml"
+RESULTS_CSV = f"{OUT_DIR}/results.csv"
+OVERLAP_MD = f"{OUT_DIR}/overlap.md"
+IDKIT_OUT_DIR = f"{OUT_DIR}/id"

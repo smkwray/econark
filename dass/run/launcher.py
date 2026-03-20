@@ -84,6 +84,36 @@ def load_config(config_path: Path):
     return {k: getattr(mod, k) for k in dir(mod) if k.isupper()}
 
 
+def as_path(value) -> Path:
+    if isinstance(value, Path):
+        return value
+    return Path(str(value))
+
+
+def config_path(config: dict, key: str, default) -> Path:
+    value = config.get(key, default)
+    return as_path(value)
+
+
+def resolve_output_contract(config: dict) -> dict[str, Path]:
+    out_dir = config_path(config, "OUT_DIR", "dass/out")
+    stacked_csv_name = str(config.get("OUT_CSV", "stacked_quarterly.csv"))
+    stacked_meta_name = str(config.get("OUT_META_MD", "stacked_quarterly_meta.md"))
+    return {
+        "out_dir": out_dir,
+        "stacked_csv": config_path(config, "STACKED_CSV", out_dir / stacked_csv_name),
+        "stacked_meta": config_path(config, "STACKED_META_MD", out_dir / stacked_meta_name),
+        "design_dir": config_path(config, "DESIGN_OUT_DIR", out_dir / "design"),
+        "cf_dir": config_path(config, "CF_OUT_DIR", out_dir / "cf"),
+        "tmle_dir": config_path(config, "TMLE_OUT_DIR", out_dir / "tmle"),
+        "lp_dir": config_path(config, "LP_OUT_DIR", out_dir / "lp"),
+        "dml_dir": config_path(config, "DML_OUT_DIR", out_dir / "dml"),
+        "results_csv": config_path(config, "RESULTS_CSV", out_dir / "results.csv"),
+        "overlap_md": config_path(config, "OVERLAP_MD", out_dir / "overlap.md"),
+        "idkit_out_dir": config_path(config, "IDKIT_OUT_DIR", out_dir / "id"),
+    }
+
+
 def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")
 
@@ -255,6 +285,7 @@ def main():
     script_dir = Path(__file__).resolve().parents[1]
     config = load_config(script_dir / "config_dass.py")
     root_dir = script_dir.parent
+    paths = resolve_output_contract(config)
     runner_threads = int(os.environ.get("DASS_THREADS_OVERRIDE", config.get("RUNNER_THREADS", 8)))
     math_threads = int(os.environ.get("DASS_MATH_THREADS_OVERRIDE", config.get("MATH_THREADS", 1)))
     design_concurrency = int(config.get("DESIGN_CONCURRENCY", 1))
@@ -397,9 +428,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -427,7 +457,7 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
 
             design_entry = {
@@ -442,13 +472,13 @@ def main():
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
             if run_cf:
-                cf_args = ["--design", str(design_csv)]
+                cf_args = ["--design", str(design_csv), "--out-dir", str(paths["cf_dir"])]
                 if "cf_w_max" in job:
                     cf_args.extend(["--w-max", str(job["cf_w_max"])])
                 cf_n_jobs = job.get("cf_n_jobs")
                 if cf_n_jobs:
                     cf_args.extend(["--n-jobs", str(cf_n_jobs)])
-                cf_json = Path("dass/out/cf") / f"cf_{design_csv.stem}.json"
+                cf_json = paths["cf_dir"] / f"cf_{design_csv.stem}.json"
                 cf_json_abs = (root_dir / cf_json).resolve()
                 if should_skip(cf_json_abs, skip_existing):
                     continue
@@ -525,9 +555,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -555,9 +584,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            tmle_args = ["--design", str(design_csv)]
+            tmle_args = ["--design", str(design_csv), "--out-dir", str(paths["tmle_dir"]), "--results", str(paths["results_csv"]), "--overlap", str(paths["overlap_md"])]
             if "w_max" in job:
                 tmle_args.extend(["--w-max", str(job["w_max"])])
             if "n_jobs" in job:
@@ -574,7 +603,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            tmle_json = Path("dass/out/tmle") / f"tmle_{design_csv.stem}.json"
+            tmle_json = paths["tmle_dir"] / f"tmle_{design_csv.stem}.json"
             tmle_json_abs = (root_dir / tmle_json).resolve()
             if should_skip(tmle_json_abs, skip_existing):
                 continue
@@ -651,9 +680,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -681,9 +709,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            lp_args = ["--design", str(design_csv)]
+            lp_args = ["--design", str(design_csv), "--out-dir", str(paths["lp_dir"]), "--results", str(paths["results_csv"])]
             if "w_max" in job:
                 lp_args.extend(["--w-max", str(job["w_max"])])
             if "w_select" in job:
@@ -712,7 +740,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            lp_json = Path("dass/out/lp") / f"lp_{design_csv.stem}.json"
+            lp_json = paths["lp_dir"] / f"lp_{design_csv.stem}.json"
             lp_json_abs = (root_dir / lp_json).resolve()
             if should_skip(lp_json_abs, skip_existing):
                 continue
@@ -789,9 +817,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -819,9 +846,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            dml_args = ["--design", str(design_csv)]
+            dml_args = ["--design", str(design_csv), "--out-dir", str(paths["dml_dir"]), "--results", str(paths["results_csv"])]
             if "w_max" in job:
                 dml_args.extend(["--w-max", str(job["w_max"])])
             if "w_select" in job:
@@ -844,7 +871,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            dml_json = Path("dass/out/dml") / f"dml_{design_csv.stem}.json"
+            dml_json = paths["dml_dir"] / f"dml_{design_csv.stem}.json"
             dml_json_abs = (root_dir / dml_json).resolve()
             if should_skip(dml_json_abs, skip_existing):
                 continue
@@ -921,9 +948,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -949,9 +975,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            dml_args = ["--design", str(design_csv)]
+            dml_args = ["--design", str(design_csv), "--out-dir", str(paths["dml_dir"]), "--results", str(paths["results_csv"])]
             if "w_max" in job:
                 dml_args.extend(["--w-max", str(job["w_max"])])
             if "w_select" in job:
@@ -974,7 +1000,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            dml_json = Path("dass/out/dml") / f"dml_{design_csv.stem}.json"
+            dml_json = paths["dml_dir"] / f"dml_{design_csv.stem}.json"
             dml_json_abs = (root_dir / dml_json).resolve()
             if should_skip(dml_json_abs, skip_existing):
                 continue
@@ -1051,9 +1077,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -1079,9 +1104,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            dml_args = ["--design", str(design_csv)]
+            dml_args = ["--design", str(design_csv), "--out-dir", str(paths["dml_dir"]), "--results", str(paths["results_csv"])]
             if "w_max" in job:
                 dml_args.extend(["--w-max", str(job["w_max"])])
             if "w_select" in job:
@@ -1104,7 +1129,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            dml_json = Path("dass/out/dml") / f"dml_{design_csv.stem}.json"
+            dml_json = paths["dml_dir"] / f"dml_{design_csv.stem}.json"
             dml_json_abs = (root_dir / dml_json).resolve()
             if should_skip(dml_json_abs, skip_existing):
                 continue
@@ -1213,9 +1238,9 @@ def main():
                     w_tag=w_tag,
                     drop_tag=drop_tag,
                 )
-                design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+                design_csv = paths["design_dir"] / f"design_{design_path}.csv"
                 design_csv_abs = (root_dir / design_csv).resolve()
-                dml_args = ["--design", str(design_csv)]
+                dml_args = ["--design", str(design_csv), "--out-dir", str(paths["dml_dir"]), "--results", str(paths["results_csv"])]
                 if "w_max" in job:
                     dml_args.extend(["--w-max", str(job["w_max"])])
                 if "w_select" in job:
@@ -1238,7 +1263,7 @@ def main():
                 if not should_skip(design_csv_abs, skip_existing):
                     scripts_to_run.append(design_entry)
                     queued_designs.add(str(design_csv_abs))
-                dml_json = Path("dass/out/dml") / f"dml_{design_csv.stem}.json"
+                dml_json = paths["dml_dir"] / f"dml_{design_csv.stem}.json"
                 dml_json_abs = (root_dir / dml_json).resolve()
                 if should_skip(dml_json_abs, skip_existing):
                     continue
@@ -1315,9 +1340,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -1343,9 +1367,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            dml_args = ["--design", str(design_csv)]
+            dml_args = ["--design", str(design_csv), "--out-dir", str(paths["dml_dir"]), "--results", str(paths["results_csv"])]
             if "w_max" in job:
                 dml_args.extend(["--w-max", str(job["w_max"])])
             if "w_select" in job:
@@ -1368,7 +1392,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            dml_json = Path("dass/out/dml") / f"dml_{design_csv.stem}.json"
+            dml_json = paths["dml_dir"] / f"dml_{design_csv.stem}.json"
             dml_json_abs = (root_dir / dml_json).resolve()
             if should_skip(dml_json_abs, skip_existing):
                 continue
@@ -1445,9 +1469,8 @@ def main():
                 design_args.extend(drop_w_series)
             if w_tag:
                 design_args.extend(["--w-tag", str(w_tag)])
-            stacked_path = job.get("stacked")
-            if stacked_path:
-                design_args.extend(["--stacked", str(stacked_path)])
+            stacked_path = job.get("stacked") or paths["stacked_csv"]
+            design_args.extend(["--stacked", str(stacked_path), "--out-dir", str(paths["design_dir"])])
             if treatment_mode == "shock":
                 design_args.extend(["--shock-oos", shock_oos])
                 if "shock_l1_ratio" in job:
@@ -1473,9 +1496,9 @@ def main():
                 w_tag=w_tag,
                 drop_tag=drop_tag,
             )
-            design_csv = Path("dass/out/design") / f"design_{design_path}.csv"
+            design_csv = paths["design_dir"] / f"design_{design_path}.csv"
             design_csv_abs = (root_dir / design_csv).resolve()
-            dml_args = ["--design", str(design_csv)]
+            dml_args = ["--design", str(design_csv), "--out-dir", str(paths["dml_dir"]), "--results", str(paths["results_csv"])]
             if "w_max" in job:
                 dml_args.extend(["--w-max", str(job["w_max"])])
             if "w_select" in job:
@@ -1498,7 +1521,7 @@ def main():
             if not should_skip(design_csv_abs, skip_existing):
                 scripts_to_run.append(design_entry)
                 queued_designs.add(str(design_csv_abs))
-            dml_json = Path("dass/out/dml") / f"dml_{design_csv.stem}.json"
+            dml_json = paths["dml_dir"] / f"dml_{design_csv.stem}.json"
             dml_json_abs = (root_dir / dml_json).resolve()
             if should_skip(dml_json_abs, skip_existing):
                 continue
@@ -1524,7 +1547,7 @@ def main():
         if config_id_py:
             idkit_args.extend(["--config-id", str(config_id_py)])
 
-        idkit_out_dir = Path(str(config.get("IDKIT_OUT_DIR", "dass/out/id")))
+        idkit_out_dir = paths["idkit_out_dir"]
         idkit_expected = [
             str(config.get("IDKIT_ESTIMATES_CSV", "id_estimates.csv")),
             str(config.get("IDKIT_DIAGNOSTICS_CSV", "id_diagnostics.csv")),
@@ -1565,7 +1588,11 @@ def main():
 
     if ok:
         print("\nAll scripts executed successfully!")
+        return 0
+
+    print("\nDASS run failed.")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -25,6 +25,17 @@ if settings.get("nice") is not None:
 from run.launcher import main
 
 
+def _normalize_exit_code(value) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return 0 if value else 1
+    try:
+        return int(value)
+    except Exception:
+        return 1
+
+
 if __name__ == "__main__":
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("usage: launcher.py")
@@ -35,4 +46,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         print("launcher.py does not accept CLI arguments; edit config_dass.py instead.", file=sys.stderr)
         raise SystemExit(2)
-    raise SystemExit(main() or 0)
+    raise SystemExit(_normalize_exit_code(main()))

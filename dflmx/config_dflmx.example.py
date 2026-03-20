@@ -11,7 +11,7 @@ Customize this file for your research project by:
 5. Run `python launcher.py`.
 
 Key fields to customize:
-- `STACKED_CSV`, `DASS_RESULTS_CSV`, `DASS_CONFIG_PY`
+- `STACKED_CSV`, `DASS_RESULTS_CSV`, `DASS_CONFIG_PY`, `DASS_RUN_DIR`
 - `OUT_DIR` and other output paths
 - `QUESTION_SOURCE`, `MANUAL_TREATMENTS`, `OUTCOME_QEND_COLS`
 - `HYPOTHESIS_RULES` and `HYPOTHESIS_SCORECARD_GROUPS`
@@ -41,6 +41,9 @@ ROOT = Path(__file__).resolve().parents[1]
 STACKED_CSV = ROOT / "dass" / "out" / "stacked_quarterly.csv"
 DASS_RESULTS_CSV = ROOT / "dass" / "out" / "results.csv"
 DASS_CONFIG_PY = ROOT / "dass" / "config_dass.py"
+# Propagation reuses helper functions from DASS `run/design.py`.
+# If your checkout is not the standard repo layout, point this to the DASS run folder.
+DASS_RUN_DIR = ROOT / "dass" / "run"
 SERIES_INVENTORY_MD = ROOT / "fetchr" / "out" / "series_inventory.md"
 MAPPING_CONFIG_JSON = ROOT / "dflmx" / "mapping_config.json"
 DOMAIN_SERIES_MAP_JSON = ROOT / "dflmx" / "domain_series_map.json"

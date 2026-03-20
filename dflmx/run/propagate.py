@@ -44,6 +44,16 @@ from common import base_series_from_lag, cfg, ensure_out_dir, read_json, write_j
 
 def _resolve_dass_run_dir(config: Any = cfg) -> Path:
     candidates: list[Path] = []
+
+    explicit_run_dir = getattr(config, "DASS_RUN_DIR", None)
+    if explicit_run_dir is not None:
+        candidates.append(Path(explicit_run_dir).expanduser().resolve())
+
+    dass_config_py = getattr(config, "DASS_CONFIG_PY", None)
+    if dass_config_py is not None:
+        dass_config_path = Path(dass_config_py).expanduser().resolve()
+        candidates.append(dass_config_path.parent / "run")
+
     cfg_root_value = getattr(config, "ROOT", None)
     if cfg_root_value is not None:
         cfg_root = Path(cfg_root_value).expanduser().resolve()
@@ -72,7 +82,13 @@ def _resolve_dass_run_dir(config: Any = cfg) -> Path:
             return candidate
 
     checked = ", ".join(str(path) for path in candidates)
-    raise FileNotFoundError(f"Could not locate DASS run directory. Checked: {checked}")
+    raise FileNotFoundError(
+        "Could not locate DASS run directory. "
+        "DFLMX propagate imports helper functions from DASS run/design.py. "
+        "Set DASS_RUN_DIR in config_dflmx.py or keep a repo layout where ROOT/dass/run exists. "
+        f"Checked: {checked}"
+    )
+
 
 
 DASS_RUN_DIR = _resolve_dass_run_dir()

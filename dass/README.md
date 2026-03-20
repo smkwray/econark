@@ -15,121 +15,87 @@
 <p align="center"><em>The IV Miner &nbsp;&bull;&nbsp; The Estimator &nbsp;&bull;&nbsp; The Causal Navigator &nbsp;&bull;&nbsp; The Evaluator</em></p>
 
 **DASS (Design, Assumptions, and Specification Suite)** is the causal-estimation core of EconArk.
-It builds a leak-safe quarterly feature panel, generates design matrices for treatment/outcome/horizon specs, and runs multiple estimators plus confirmatory diagnostics.
 
-## Pipeline Position
+In plain language, DASS does four jobs:
+
+1. it turns mixed-frequency source data into a leak-safe quarterly panel,
+2. it builds design files for specific treatment/outcome/horizon questions,
+3. it runs one or more estimator families,
+4. it writes outputs that can be reviewed directly or passed downstream to DFLMX.
+
+## When to use DASS
+
+Use DASS when you already have a reasonably clear question such as:
+
+- “What is the effect of treatment **X** on outcome **Y** over the next **H** quarters?”
+- “How do results compare across DML, TMLE, local projections, or causal forests?”
+- “Which confirmatory diagnostics should travel with those estimates?”
+
+## Pipeline position
 
 ```text
 fetchr -> DASS -> DFLMX
 ```
 
-DASS can also be run standalone if you already have compatible input series.
+DASS can also be run on its own if you already have compatible input series.
 
-## Complete Feature Inventory
+## What goes in
 
-### 1) Data ingestion and quarterly stacking (`run/prep.py`)
+- configured raw, fallback, or external series
+- `config_dass.py`
+- optional `config_id.py`
+- estimator dependencies from `requirements.txt`
 
-- Reads mixed-frequency sources (`d/w/m/q`) from configured catalogs and raw CSVs.
-- Enforces information-set cutoffs (quarter-start or event-driven) to prevent leakage.
-- Builds lagged feature columns (`{freq}__{series}__lag{NNN}`) plus quarter-end columns (`qend__{series}`).
-- Supports generated/derived series from config lambdas.
-- Supports external series injection and fallback source wiring.
-- Applies missingness filtering and metadata reporting.
-- Writes the core panel contract:
-  - `out/stacked_quarterly.csv`
-  - `out/stacked_quarterly_meta.md`
+## What comes out
 
-### 2) Design-matrix construction (`run/design.py`)
+Core outputs usually include:
 
-- Builds per-job design data for `(treatment, outcome, horizon)` specifications.
-- Treatment modes:
-  - `level`
-  - `diff`
-  - `shock` (ElasticNet residualized treatment innovation)
-- Supports blocked out-of-sample shock residualization.
-- Supports binary treatment conversion for binary estimators.
-- Supports optional stationarization transforms.
-- Supports per-job drop windows and control-subset controls.
-- Writes:
-  - `out/design/design_<stem>.csv`
-  - `out/design/design_<stem>_meta.json`
+- `out/stacked_quarterly.csv`
+- `out/stacked_quarterly_meta.md`
+- `out/design/*.csv`
+- `out/results.csv`
+- `out/dml/*.json`
+- `out/tmle/*.json`
+- `out/lp/*.json`
+- `out/cf/*.json`
 
-### 3) Estimator families
+Optional outputs include report tables, plots, Romano-Wolf artifacts, synthetic calibration outputs, and IDKit files under `out/id/`.
 
-- `run/cf.py`: `CausalForestDML` (heterogeneity-oriented causal forest).
-- `run/dml.py`: `LinearDML` (continuous treatment).
-- `run/tmle.py`: TMLE workflow (binary treatment path with overlap diagnostics).
-- `run/lp.py`: reduced-form local projections (OLS + HAC).
-- IV-oriented paths:
-  - `run/dml_iv.py`
-  - `run/lp_iv.py`
-  - weak-IV utilities (`run/weak_iv_core.py`, `run/weak_iv_clr.py`)
-
-### 4) Multiple-testing, robustness, and diagnostics
-
-- Multiple-testing corrections:
-  - `run/romano_wolf_stepdown.py`
-  - `run/bh.py`
-  - Romano-Wolf draw compiler: `run/compile_romano_wolf_null_draws.py`
-- Stress tests and diagnostics:
-  - `run/perm_test.py`, `run/permutation_inference.py`
-  - `run/sensitivity_bounds.py`
-  - `run/endpoint_stability.py`
-  - `run/lp_drift_check.py`
-  - `run/nc_empirical_calibration.py`
-  - `run/synthetic_calibration_harness.py`, `run/synthetic_calibration_gate.py`
-  - `run/monitor_confirmatory_progress.py`
-- Control/path helpers:
-  - `run/screen_controls.py`
-  - `run/results_utils.py`
-  - `run/threading_utils.py`
-
-### 5) Identification scaffold (IDKit)
-
-IDKit is included as a portable confirmatory layer under `run/idkit/`.
-
-- Question-pack schema and validation.
-- Adapter abstraction for column resolution.
-- Auto-pack generation from DASS jobs.
-- Event-study and DiD design runners.
-- Diagnostics registry and threshold calibration.
-- Stable contract outputs under `out/id/`.
-
-### 6) Reporting and post-processing
-
-- Result scaling and family tagging:
-  - `run/scale_results.py`
-  - `run/backfill_family.py`
-- Rebuild/recovery tooling:
-  - `run/recover_estimators.py`
-  - `run/rebuild_results.py`
-- Publication artifacts:
-  - `run/report.py`
-  - `run/plot_results.py`
-  - `run/plot_cf_diagnostics.py`
-  - `run/headline_bundle.py`
-  - `run/sanity.py`
-
-## Execution Flow
-
-`launcher.py` delegates to `run/launcher.py`, which orchestrates prep, design, estimator, and optional post stages according to `config_dass.py` toggles.
-
-Typical shape:
+## Pipeline at a glance
 
 ```text
 prep -> design jobs -> estimator jobs -> optional post/report/idkit
 ```
 
-## Setup
+### Stage 1: `run/prep.py`
 
-### Prerequisites
+Builds the quarterly analysis panel.
 
-- Python 3.10+
-- `pip install -r requirements.txt`
-- Upstream data assets referenced by your config
-- Optional shared launcher runtime policy at repo root (`launcher_config.json`)
+- reads mixed-frequency data
+- applies information-set cutoffs
+- creates lagged feature columns and quarter-end columns
+- writes the stacked quarterly dataset and metadata
 
-### First Run
+### Stage 2: `run/design.py`
+
+Builds one design file per treatment/outcome/horizon job.
+
+- supports `level`, `diff`, and `shock` treatment modes
+- can create binary-treatment versions for binary estimators
+- can apply drop windows, control restrictions, and stationarity transforms
+
+### Stage 3: estimator stages
+
+The main estimator entry points are:
+
+- `run/dml.py`
+- `run/tmle.py`
+- `run/lp.py`
+- `run/cf.py`
+
+IV-oriented helpers and confirmatory utilities are also shipped for more advanced workflows.
+
+## Quick start
 
 ```bash
 cd dass
@@ -138,168 +104,77 @@ cp config_id.example.py config_id.py
 python launcher.py
 ```
 
-## Configuration Reference (templates)
+The launcher is the recommended entry point for day-to-day use.
+
+## First-run reality check
+
+- The example config is a template, not a plug-and-play setup.
+- Most users need to edit paths, source definitions, and job lists before the first real run.
+- If you change `OUT_DIR`, the launcher should keep prep, design, and estimator paths aligned. You can also override per-stage output locations explicitly.
+- If you switch the cutoff policy to `event`, define the expected event maps in `dass/events.py`.
+
+## Minimal success checklist
+
+A small successful run should usually leave you with:
+
+- one stacked quarterly CSV,
+- at least one file under `out/design/`,
+- at least one estimator output under `out/dml/`, `out/tmle/`, `out/lp/`, or `out/cf/`,
+- an updated `out/results.csv` when an estimator family writes summary rows.
+
+## Common issues
+
+### A stage fails immediately
+
+Start with the launcher output. DASS runs prep first, then design, then estimator jobs, so the first failing stage is usually the right place to look.
+
+### A custom output directory does not seem to stick
+
+Prefer changing `OUT_DIR` in `config_dass.py` and running through `python launcher.py`. If you call stage scripts directly, pass explicit paths such as `--stacked`, `--out-dir`, `--results`, and `--overlap` so every stage is looking at the same tree.
+
+### Event cutoff mode fails
+
+That usually means the event map expected by the config is missing or incomplete. The safer first run is the default `quarter_start` cutoff.
+
+### An estimator import fails
+
+Some estimator families require optional heavy dependencies. Install from `requirements.txt` first, then narrow the config to the estimator families you actually want to run.
+
+## Key config files
 
 ### `config_dass.example.py`
 
-Main runtime template controlling:
+This is the main runtime template. It controls:
 
-- Input catalog and raw-series wiring (`SERIES_SOURCE`, `RAW_DIR`, `FREDFETCH_PY`, `FETCH_DICT_TXT`)
-- Cutoff policy (`quarter_start` or `event`)
-- Lag dimensions and missingness thresholds
-- Generated series definitions
-- Job grids for DML/TMLE/LP/CF/IV paths
-- Parallelism and threading caps
-- Optional IDKit auto-pack behavior
-
-Notes:
-
-- Default cutoff in the public template is `quarter_start` for safer first-time setup.
-- If you switch to `event`, define `dass/events.py` with expected event maps.
+- input catalogs and raw-series wiring
+- cutoff policy
+- lag and missingness settings
+- generated series
+- job grids for DML, TMLE, LP, CF, and IV-related paths
+- threading and concurrency
+- output locations
+- optional IDKit behavior
 
 ### `config_id.example.py`
 
-IDKit question-pack template controlling:
+This is the template for IDKit question packs and related confirmatory defaults.
 
-- schema versions
-- diagnostic defaults
-- confidence tiers
-- event-study/DiD question packs
-
-## Inputs and Outputs
-
-### Required Inputs
-
-- Configured source series (raw and/or fallback/external paths)
-- Runtime config files (`config_dass.py`, optional `config_id.py`)
-
-### Core Outputs
-
-- `out/stacked_quarterly.csv`
-- `out/stacked_quarterly_meta.md`
-- `out/results.csv`
-- `out/design/*.csv`
-- `out/dml/*.json`
-- `out/tmle/*.json`
-- `out/lp/*.json`
-- `out/cf/*.json`
-
-### Optional/Extended Outputs (enabled by config)
-
-- `out/id/*` (IDKit contracts)
-- `out/tables/*`
-- `out/report.md`, `out/report.txt`
-- `out/plots/*` and figure artifacts
-- `out/romano_wolf_null_draws.csv`
-- `out/synthetic_calibration_*.csv`
-
-## Complete Shipped File Reference
-
-### Top-level module files
+## Core files
 
 ```text
 dass/launcher.py
-dass/README.md
 dass/config_dass.example.py
 dass/config_id.example.py
-dass/overview.md
-dass/requirements.txt
-```
-
-### Runtime orchestration and stage modules
-
-```text
-dass/run/__init__.py
-dass/run/backfill_family.py
-dass/run/bh.py
-dass/run/cf.py
-dass/run/compile_romano_wolf_null_draws.py
+dass/run/prep.py
 dass/run/design.py
 dass/run/dml.py
-dass/run/dml_iv.py
-dass/run/endpoint_stability.py
-dass/run/headline_bundle.py
-dass/run/launcher.py
-dass/run/lp.py
-dass/run/lp_drift_check.py
-dass/run/lp_iv.py
-dass/run/monitor_confirmatory_progress.py
-dass/run/nc_empirical_calibration.py
-dass/run/perm_test.py
-dass/run/permutation_inference.py
-dass/run/plot_cf_diagnostics.py
-dass/run/plot_results.py
-dass/run/prep.py
-dass/run/rebuild_results.py
-dass/run/recover_estimators.py
-dass/run/report.py
-dass/run/results_utils.py
-dass/run/romano_wolf_stepdown.py
-dass/run/sanity.py
-dass/run/scale_results.py
-dass/run/screen_controls.py
-dass/run/sensitivity_bounds.py
-dass/run/stationary.py
-dass/run/synthetic_calibration_gate.py
-dass/run/synthetic_calibration_harness.py
-dass/run/threading_utils.py
 dass/run/tmle.py
-dass/run/weak_iv_clr.py
-dass/run/weak_iv_core.py
+dass/run/lp.py
+dass/run/cf.py
+dass/overview.md
 ```
 
-### IDKit submodule
+## Further reading
 
-```text
-dass/run/idkit/__init__.py
-dass/run/idkit/adapter.py
-dass/run/idkit/auto_packs.py
-dass/run/idkit/build_panel.py
-dass/run/idkit/calibrate_thresholds.py
-dass/run/idkit/calibration.py
-dass/run/idkit/designs.py
-dass/run/idkit/diagnostics.py
-dass/run/idkit/event_study.py
-dass/run/idkit/schema.py
-dass/run/idkit/summarize_id.py
-```
-
-### Test suite (30 tests)
-
-```text
-dass/tests/__init__.py
-dass/tests/test_compile_romano_wolf_null_draws.py
-dass/tests/test_config_iv_nc_autosource.py
-dass/tests/test_dml_iv_smoke.py
-dass/tests/test_endpoint_stability.py
-dass/tests/test_idkit_adapter_registry_hardening.py
-dass/tests/test_idkit_auto_from_dass.py
-dass/tests/test_idkit_calibration.py
-dass/tests/test_idkit_design_compare.py
-dass/tests/test_idkit_diagnostics_depth.py
-dass/tests/test_idkit_did_path.py
-dass/tests/test_idkit_portability.py
-dass/tests/test_launcher_manifest_iv_nc.py
-dass/tests/test_lp_iv_smoke.py
-dass/tests/test_lp_reliability_tier.py
-dass/tests/test_lp_smoke.py
-dass/tests/test_monitor_confirmatory_progress.py
-dass/tests/test_nc_empirical_calibration.py
-dass/tests/test_parallel_preflight.py
-dass/tests/test_perm_test_smoke.py
-dass/tests/test_permutation_inference.py
-dass/tests/test_pipeline_smoke.py
-dass/tests/test_report_alignment_smoke.py
-dass/tests/test_romano_wolf_stepdown.py
-dass/tests/test_run_confirmatory_manifest.py
-dass/tests/test_sensitivity_bounds.py
-dass/tests/test_synthetic_calibration_gate.py
-dass/tests/test_synthetic_calibration_harness.py
-dass/tests/test_update_iv_nc_results_summary.py
-dass/tests/test_weak_iv_clr.py
-dass/tests/test_weak_iv_core.py
-```
-
-## Further Reading
-
-- `overview.md` for full architecture, contracts, and portability notes.
+- `overview.md` for architecture, contracts, and portability notes
+- the root `README.md` for repo-level workflow guidance

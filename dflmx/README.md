@@ -10,104 +10,88 @@
 
 <p align="center"><em>The Navigator &nbsp;&bull;&nbsp; The Compressor</em></p>
 
-**D**ynamic **F**actor **L**ocal-**M**acro e**X**plorer is the synthesis layer between DASS outputs and downstream interpretation. It compresses high-dimensional panels into latent factors, propagates treatment shocks, ranks findings, and exports confirmatory candidate contracts.
+**D**ynamic **F**actor **L**ocal-**M**acro e**X**plorer is the interpretation and synthesis layer that usually sits downstream of DASS.
 
-## Pipeline Position
+In plain language, DFLMX:
+
+1. builds a factor panel from DASS-style lagged quarterly data,
+2. compresses that panel into a smaller set of latent factors,
+3. propagates treatment shocks through those factors and related outcomes,
+4. writes ranked findings, robustness checks, and candidate confirmatory artifacts.
+
+## Pipeline position
 
 ```text
 DASS -> DFLMX
 ```
 
-## Complete Feature Inventory
+## When to use DFLMX
 
-### Stage A: Factor panel assembly (`run/build_panel.py`)
+Use DFLMX when you want a broader picture than a single direct treatment effect. It is a good fit for questions like:
 
-- Reads DASS stacked panel (`STACKED_CSV`).
-- Selects eligible lag columns by frequency allowlist (`FACTOR_FREQ_ALLOWLIST`).
-- Supports explicit excludes by column/prefix/regex.
-- Filters columns by missingness (`FACTOR_MAX_MISSING_SHARE`).
-- Filters low-variance columns (`FACTOR_MIN_STD`).
-- Writes:
-  - `out/factor_panel.csv`
-  - `out/factor_panel_columns.csv`
-  - `out/factor_panel_meta.json`
+- “Which common factors seem to move with this treatment shock?”
+- “How do effects propagate across related domains?”
+- “Which channels or candidate confirmatory variables deserve a closer follow-up?”
 
-### Stage B: Factor extraction and interpretation (`run/extract.py`)
+## What it needs
 
-- Median-imputation + standardization before PCA.
-- Automatic factor-count selection (`AUTO_K`) with configurable bounds/target variance.
-- Deterministic sign orientation for stable interpretation.
-- Top-loading extraction per factor with source/frequency metadata lookup.
-- Writes:
-  - `out/factors.csv`
-  - `out/loadings.csv`
-  - `out/factor_diagnostics.csv`
-  - `out/top_loadings.csv`
-  - `out/series_name_dict.json`
-  - `out/factor_cards.md`
+- a DASS stacked panel
+- DASS results
+- `config_dflmx.py`
+- optional mapping/domain JSON files
+- access to the DASS helper code used by `run/propagate.py`
 
-### Stage C/D/E: Shock propagation, ranking, mediation (`run/propagate.py`)
+That last point matters: the propagation stage reuses helper functions from DASS `run/design.py`. In a nonstandard checkout, set `DASS_RUN_DIR` in `config_dflmx.py`.
 
-Core modeling features:
+## What it writes
 
-- ElasticNet residualized shock construction with retry/fallback grids.
-- Local-projection IRFs across configured horizons.
-- FDR correction and ranked findings (`findings_ranked.csv`, `irf_lp_fdr.csv`).
-- Hypothesis mapping and scorecard generation.
-- Channel mediation + channel-path ranking.
-- Main-effect and channel-path summary tables.
-- Variance-attribution summaries.
+Core outputs usually include:
 
-Robustness and sensitivity features:
+- `out/factor_panel.csv`
+- `out/factors.csv`
+- `out/loadings.csv`
+- `out/factor_diagnostics.csv`
+- `out/shock_series.csv`
+- `out/irf_lp.csv`
+- `out/irf_lp_fdr.csv`
+- `out/findings_ranked.csv`
+- `out/table_main_effects.csv`
+- `out/table_channel_paths.csv`
 
-- Recession split-sample heterogeneity (`irf_lp_recession.csv`).
-- Recession interaction model (`irf_lp_recession_interaction.csv`).
-- Split-vs-interaction comparison table (`irf_lp_recession_compare.csv`).
-- Continuous-state interaction analysis (`irf_lp_state_continuous.csv`).
-- Lead-anticipation diagnostics (`lead_anticipation_checks.csv/.md`).
-- Episode leaveout diagnostics (`episode_leaveout_checks.csv`, `episode_leaveout_summary.csv`, `.md`).
-- Domain-sensitivity diagnostics (`domain_sensitivity_summary.csv`, `domain_sensitivity_diagnostics.csv`).
-- Specification sensitivity sweeps and baseline recommendation:
-  - `spec_sensitivity_runs.csv`
-  - `spec_stability_summary.csv`
-  - `spec_recommended_baseline.json`
-- DASS W-spec shift summary (`w_spec_shift_summary.csv`).
+Optional outputs include recession/state splits, sensitivity sweeps, candidate IV or negative-control files, and confirmatory contract manifests.
 
-Confirmatory contract tooling:
-
-- IV candidate mining (`run/iv_candidate_miner.py`) with transform-aware scoring.
-- Negative-control candidate mining (`run/negative_control_miner.py`).
-- Contract manifest generation (`run/iv_nc_contracts.py`).
-- Outputs:
-  - `out/iv_candidates.csv`
-  - `out/iv_candidate_checklist.csv`
-  - `out/negative_control_candidates.csv`
-  - `out/negative_control_checklist.csv`
-  - `out/confirmatory_contracts_manifest.csv`
-  - `out/iv_gate_summary.csv`
-  - `out/pretrend_triage.csv`
-  - `out/iv_headliners_top*.csv`, `out/nc_headliners_top*.csv`, `out/iv_nc_headliners.md` (when headliner publish script is present/enabled)
-
-## Execution Entry Point
-
-`launcher.py` runs the shipped stages in order:
+## Stages at a glance
 
 ```text
-run/build_panel.py -> run/extract.py -> run/propagate.py
+build_panel -> extract -> propagate
 ```
 
-## Setup
+### `run/build_panel.py`
 
-### Prerequisites
+Builds the factor-ready dataset from the DASS stacked panel.
 
-- Python 3.10+
-- `pip install -r requirements.txt`
-- Upstream DASS outputs:
-  - `dass/out/stacked_quarterly.csv`
-  - `dass/out/results.csv`
-- Optional shared launcher runtime policy at repo root (`launcher_config.json`)
+- selects eligible lag columns
+- filters by missingness and low variance
+- writes the factor panel and column metadata
 
-### First Run
+### `run/extract.py`
+
+Extracts factors using PCA.
+
+- imputes and standardizes features
+- chooses factor count automatically when enabled
+- writes scores, loadings, diagnostics, and factor cards
+
+### `run/propagate.py`
+
+Builds residualized shocks and propagation outputs.
+
+- runs local-projection style propagation
+- ranks findings and applies FDR corrections
+- writes channel and robustness summaries
+- can emit IV/negative-control candidate artifacts when enabled
+
+## Quick start
 
 ```bash
 cd dflmx
@@ -117,131 +101,80 @@ cp domain_series_map.example.json domain_series_map.json
 python launcher.py
 ```
 
-Optional stage start:
+You can also start later in the sequence:
 
 ```bash
 python launcher.py --stage extract
 python launcher.py --stage propagate
 ```
 
-## Configuration Files
+## First-run reality check
+
+- The config file is a template. You will almost certainly need to edit paths and question settings.
+- DFLMX expects DASS-style inputs, not arbitrary CSVs.
+- `run/propagate.py` depends on DASS helper code. If your repository layout is unusual, set `DASS_RUN_DIR`.
+- `QUESTION_SOURCE = "dass_active_jobs"` means DFLMX reads active questions from the DASS config. Switch to `manual` if you want to define the analysis grid entirely inside DFLMX.
+
+## Common issues
+
+### The run fails before factor extraction starts
+
+Check the upstream input paths first:
+
+- `STACKED_CSV`
+- `DASS_RESULTS_CSV`
+- `DASS_CONFIG_PY`
+
+### The factor panel ends up empty
+
+That usually means the allowlist, missingness filter, or low-variance filter is too strict for the available stacked panel.
+
+### Propagation cannot locate DASS code
+
+Set `DASS_RUN_DIR` in `config_dflmx.py` to the folder that contains DASS `run/design.py`.
+
+### The questions do not match what DASS ran
+
+If `QUESTION_SOURCE` is `dass_active_jobs`, DFLMX will follow the active job definitions in the DASS config. Use `manual` if you want a separate question set here.
+
+## Key config files
 
 ### `config_dflmx.example.py`
 
-Primary runtime template controlling:
+Controls:
 
-- input/output paths
-- factor extraction (`N_FACTORS`, `AUTO_K_*`)
-- question source (`dass_active_jobs` or `manual`)
-- LP/FDR thresholds
-- hypothesis rules and scorecard groups
-- recession/state heterogeneity toggles
-- domain/sensitivity and W-spec diagnostics
-- IV/negative-control discovery toggles and thresholds (`RUN_IV_NC_DISCOVERY`, `IVNC_*`)
-- shock residualization retries and quality gates
-- threading and worker caps
+- DASS input paths
+- DFLMX output paths
+- factor extraction choices
+- question source and analysis grid
+- propagation horizons, FDR, and robustness settings
+- hypothesis rules and scorecards
+- IV/negative-control discovery toggles
+- worker and math-thread settings
 
-Important semantics in this template:
+### `mapping_config.example.json`
 
-- `TRANSFER_COMPONENT_TREATMENTS` is a plain alias list for any treatment family you define; it is consumed through `HYPOTHESIS_RULES[*]["treatments"]`.
-- `DOMAIN_CONSUMPTION_KEYWORDS`, `DOMAIN_LABOR_KEYWORDS`, and `DOMAIN_CREDIT_FINCOND_KEYWORDS` are only used when `DOMAIN_USE_KEYWORD_FALLBACK=True`, as substring-based fallback domain tagging.
-- Candidate/contract output path constants (`IV_CANDIDATES_CSV`, `NEGATIVE_CONTROL_CANDIDATES_CSV`, `CONFIRMATORY_CONTRACTS_MANIFEST_CSV`, `PRETREND_TRIAGE_*`, etc.) are declared explicitly so first-run setups do not fail on missing config fields.
-
-### `config_dflmx_alt.example.py`
-
-Same schema as default config, intended for A/B profile comparisons.
-
-### `mapping_config.example.json` and `mapping_config.example.jsonc`
-
-Optional override map for manual question selection and hypothesis mappings.
-The `.jsonc` file includes commented guidance; copy to `.json` for runtime use.
+Optional manual question and hypothesis mapping overrides.
 
 ### `domain_series_map.example.json`
 
-Optional domain tag map (consumption/labor/credit-financial-conditions labels) for interpretation layers.
+Optional domain labels for interpretation layers.
 
-## Output Contract (shipped stage outputs)
-
-### Core factor and propagation outputs
-
-- `out/factor_panel.csv`
-- `out/factor_panel_columns.csv`
-- `out/factor_panel_meta.json`
-- `out/factors.csv`
-- `out/loadings.csv`
-- `out/factor_diagnostics.csv`
-- `out/top_loadings.csv`
-- `out/factor_cards.md`
-- `out/series_name_dict.json`
-- `out/shock_series.csv`
-- `out/shock_meta.json`
-- `out/irf_lp.csv`
-- `out/irf_lp_fdr.csv`
-- `out/findings_ranked.csv`
-- `out/channel_mediation.csv`
-- `out/channel_findings_ranked.csv`
-- `out/hypothesis_scorecard.csv`
-- `out/table_main_effects.csv`
-- `out/table_channel_paths.csv`
-- `out/variance_attribution.csv`
-
-### Robustness/sensitivity outputs
-
-- `out/irf_lp_recession.csv`
-- `out/irf_lp_recession_interaction.csv`
-- `out/irf_lp_recession_compare.csv`
-- `out/irf_lp_state_continuous.csv`
-- `out/lead_anticipation_checks.csv`
-- `out/lead_anticipation_checks.md`
-- `out/episode_leaveout_checks.csv`
-- `out/episode_leaveout_summary.csv`
-- `out/episode_leaveout_checks.md`
-- `out/domain_sensitivity_summary.csv`
-- `out/domain_sensitivity_diagnostics.csv`
-- `out/spec_sensitivity_runs.csv`
-- `out/spec_stability_summary.csv`
-- `out/spec_recommended_baseline.json`
-- `out/w_spec_shift_summary.csv`
-
-### Candidate/contract outputs
-
-- `out/dass_candidate_jobs.csv`
-- `out/dass_candidate_review_checklist.csv`
-- `out/iv_candidates.csv`
-- `out/iv_candidate_checklist.csv`
-- `out/negative_control_candidates.csv`
-- `out/negative_control_checklist.csv`
-- `out/confirmatory_contracts_manifest.csv`
-- `out/iv_gate_summary.csv`
-- `out/pretrend_triage.csv`
-- `out/pretrend_triage.md`
-
-Candidate/contract CSVs and triage markdown are always emitted; when IV/NC discovery is disabled they are written as empty scaffolds.
-
-## Complete Shipped File Reference
+## Core files
 
 ```text
 dflmx/launcher.py
-dflmx/README.md
 dflmx/config_dflmx.example.py
-dflmx/config_dflmx_alt.example.py
-dflmx/config_loader.py
-dflmx/domain_series_map.example.json
-dflmx/mapping_config.example.json
-dflmx/mapping_config.example.jsonc
-dflmx/requirements.txt
-dflmx/run/__init__.py
 dflmx/run/build_panel.py
-dflmx/run/common.py
 dflmx/run/extract.py
-dflmx/run/iv_candidate_miner.py
-dflmx/run/iv_nc_contracts.py
-dflmx/run/negative_control_miner.py
 dflmx/run/propagate.py
+dflmx/run/iv_candidate_miner.py
+dflmx/run/negative_control_miner.py
+dflmx/run/iv_nc_contracts.py
 ```
 
-## Companion Modules
+## Companion modules
 
-- `dass` (required upstream output contract)
-- `coflow` (parallel reduced-form screening track)
-- `fetchr` (upstream data production; maintained separately)
+- `dass` supplies the main upstream contract
+- `fetchr` supplies the upstream data pipeline
+- `coflow` is a separate reduced-form screening track
