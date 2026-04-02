@@ -1,0 +1,2 @@
+"run_id","estimator","treatment","outcome","horizon","estimate","se","p"
+"tiny_e2e_run","lp","treat_a","outcome_a",1,0.25,0.08,0.04

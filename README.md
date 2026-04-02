@@ -3,8 +3,13 @@
 EconArk is a modular econometrics toolkit for macroeconomic time-series work. The repository is organized as a set of pipelines that can be used together or, in some cases, separately once their expected inputs are already available.
 
 ```text
-fetchr  ──>  dass  ──>  dflmx
-fetchr  ──>  coflow
+Python:
+  fetchr  ──>  dass  ──>  dflmx
+  fetchr  ──>  coflow
+
+R (econark-r/):
+  fetchr-R  ──>  dass-R  ──>  dflmx-R
+  fetchr-R  ──>  coflow-R
 ```
 
 ## What each module is for
@@ -149,6 +154,43 @@ Other modules rely more heavily on smoke runs through their shipped entry points
 - `coflow/arch.md`
 - `coflow/QUICKSTART.md`
 - `coflow/ORCHESTRATION_GUIDE.md`
+
+## R implementation (`econark-r/`)
+
+The `econark-r/` directory contains an R port of all four modules. The goal is methodological parity — the R versions replicate the same analytical pipelines and produce defensible, comparable results — not byte-for-byte identical output. Substitutions are intentional and documented where the R and Python statistical ecosystems differ.
+
+Each R module mirrors its Python counterpart:
+
+| Python | R | Purpose |
+|--------|---|---------|
+| `fetchr/` | `econark-r/fetchr-R/` | Data collection, cleaning, interpolation |
+| `coflow/` | `econark-r/coflow-R/` | Mixed-frequency reduced-form screening |
+| `dass/` | `econark-r/dass-R/` | Design datasets and causal estimation |
+| `dflmx/` | `econark-r/dflmx-R/` | Factor extraction and shock propagation |
+
+### Running the R modules
+
+```r
+# From the repo root:
+Rscript econark-r/fetchr-R/run/main.R
+Rscript econark-r/coflow-R/run/main.R
+Rscript econark-r/dass-R/run/main.R
+Rscript econark-r/dflmx-R/run/main.R
+```
+
+### Known differences between Python and R versions
+
+The R implementations target methodological equivalence, not numerical identity. Most results are closely aligned, but differences arise where the underlying statistical libraries use different algorithms or default parameterizations. Known substantive differences include:
+
+- **Johansen cointegration test (coflow):** The Python version uses `statsmodels.tsa.vector_ar.vecm.coint_johansen()` while the R version uses `urca::ca.jo()`. Both apply the trace statistic at the 95% level with no deterministic trend term, but the two implementations use different tabulated critical values and may handle small-sample corrections differently. In practice, this means that for some variable pairs near the cointegration boundary, the Python version may reject the null of no cointegration (finding a cointegrating relationship) while the R version does not, or vice versa. When this occurs, the downstream model selection diverges: one version fits a VECM (Vector Error Correction Model) to capture the long-run equilibrium, while the other falls back to a VAR in differences. The directional rankings and scores are largely consistent across the two implementations, but individual pair-level regime assignments can differ for borderline cases.
+
+- **Estimator internals (dass):** Treatment effect estimators may differ in implementation details while preserving the same treatment/outcome/horizon contract and output semantics.
+
+- **Fallback and quality guards (dflmx):** The R version includes explicit regression-gate diagnostics and finite-sample quality guards that do not have direct Python equivalents.
+
+- **Interpolation routing (fetchr):** The R version explicitly distinguishes `method_requested` from `method_executed` and records fallback reasons when preconditions for a requested interpolation method are not met.
+
+See each module's `README.md` and `overview.md` for further details.
 
 ## Contributing
 

@@ -1,0 +1,13 @@
+record_date,security_class1_desc,security_class2_desc,issue_date,maturity_date,interest_rate_pct,yield_pct,outstanding_amt
+2024-01-31,Treasury Bills,BILL-001,2024-01-15,2024-04-30,,5.20,1000
+2024-01-31,Treasury Notes,NOTE-001,2024-01-31,2027-01-31,4.50,4.60,700
+2024-01-31,Treasury Bonds,BOND-001,2024-01-31,2034-01-31,4.70,4.80,500
+2024-01-31,Treasury Inflation-Protected Securities,TIPS-001,2023-01-15,2030-01-15,1.50,1.80,300
+2024-01-31,Floating Rate Notes,FRN-001,2024-01-31,2026-01-31,,5.10,200
+2024-01-31,Total Marketable,Total,2024-01-31,2034-01-31,,0.00,2700
+2024-02-29,Treasury Bills,BILL-001,2024-01-15,2024-04-30,,5.10,950
+2024-02-29,Treasury Notes,NOTE-001,2024-01-31,2027-01-31,4.50,4.50,730
+2024-02-29,Treasury Bonds,BOND-001,2024-01-31,2034-01-31,4.70,4.70,505
+2024-02-29,Treasury Inflation-Protected Securities,TIPS-001,2023-01-15,2030-01-15,1.50,1.70,315
+2024-02-29,Floating Rate Notes,FRN-001,2024-01-31,2026-01-31,,5.00,210
+2024-02-29,Total Marketable,Total,2024-02-29,2034-01-31,,0.00,2710

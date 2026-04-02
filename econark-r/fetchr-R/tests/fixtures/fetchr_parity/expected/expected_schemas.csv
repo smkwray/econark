@@ -1,0 +1,6 @@
+file,required_columns
+panel_primary.csv,date;gdp;cpi
+panel_secondary.csv,date;gdp;cpi
+scenario_quantiles.csv,date;q05;q50;q95
+scenario_representatives.csv,date;rep_01
+interpolation_summary_fixture.csv,name;method;method_requested;method_executed;status
