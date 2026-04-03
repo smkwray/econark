@@ -1,3 +1,8 @@
+ .iv_core_src_dir <- local({
+  src <- tryCatch(normalizePath(sys.frame(1)$ofile, winslash = "/", mustWork = TRUE), error = function(e) "")
+  if (nzchar(src)) dirname(src) else ""
+})
+
 iv_prepare_numeric_frame <- function(df) {
   out <- as.data.frame(df, stringsAsFactors = FALSE)
   for (c in names(out)) out[[c]] <- suppressWarnings(as.numeric(out[[c]]))
@@ -29,21 +34,21 @@ iv_select_first_existing <- function(spec, keys) {
   ""
 }
 
-iv_resolve_design_columns <- function(df, spec = list(), instrument_override = NULL) {
-  treatment_label <- iv_select_first_existing(spec, c("treatment", "endogenous", "d", "t", "treat", "treatment_var"))
-  outcome_label <- iv_select_first_existing(spec, c("outcome", "y", "outcome_var", "target"))
+iv_new_run_id <- function(tag) {
+  stamp <- format(Sys.time(), "%Y%m%dT%H%M%OS3")
+  stamp <- gsub("[^0-9T]", "", stamp)
+  paste0(stamp, "_", safe_name(tag))
+}
 
-  treatment <- treatment_label
-  outcome <- outcome_label
-  if (!nzchar(treatment) || !treatment %in% names(df)) {
-    if ("D" %in% names(df)) treatment <- "D"
-  }
-  if (!nzchar(outcome) || !outcome %in% names(df)) {
-    if ("Y" %in% names(df)) outcome <- "Y"
-  }
-  if (!nzchar(treatment) || !treatment %in% names(df)) stop(sprintf("Missing treatment column in design data: %s", treatment))
-  if (!nzchar(outcome) || !outcome %in% names(df)) stop(sprintf("Missing outcome column in design data: %s", outcome))
+iv_date_key <- function(x) {
+  out <- suppressWarnings(as.Date(x))
+  key <- rep(NA_character_, length(out))
+  keep <- !is.na(out)
+  key[keep] <- format(out[keep], "%Y-%m-%d")
+  key
+}
 
+iv_extract_instrument_columns <- function(spec = list(), instrument_override = NULL, available_names = character()) {
   instrument_cols <- character()
   if (!is.null(instrument_override) && nzchar(trimws(as.character(instrument_override)))) {
     instrument_cols <- trimws(unlist(strsplit(as.character(instrument_override), ",", fixed = TRUE)))
@@ -58,8 +63,90 @@ iv_resolve_design_columns <- function(df, spec = list(), instrument_override = N
       iv_coerce_list(spec$z_cols)
     ))
   }
-  if (length(instrument_cols) == 0L && "Z" %in% names(df)) instrument_cols <- "Z"
-  instrument_cols <- unique(instrument_cols[nzchar(instrument_cols) & instrument_cols %in% names(df)])
+  if (length(instrument_cols) == 0L && "Z" %in% available_names) instrument_cols <- "Z"
+  unique(instrument_cols[nzchar(instrument_cols)])
+}
+
+iv_resolve_factors_csv <- function(cfg = list(), factors_csv = NULL) {
+  candidate <- ""
+  if (!is.null(factors_csv) && nzchar(trimws(as.character(factors_csv)))) {
+    candidate <- trimws(as.character(factors_csv))
+  } else {
+    for (key in c("DASS_IV_FACTORS_CSV", "DFLMX_FACTORS_CSV", "FACTORS_CSV")) {
+      value <- cfg[[key]]
+      if (is.null(value)) next
+      value <- trimws(as.character(value[[1L]]))
+      if (nzchar(value)) {
+        candidate <- value
+        break
+      }
+    }
+  }
+
+  if (nzchar(candidate)) {
+    if (!is.null(cfg$CONFIG_DIR)) return(resolve_cfg_path(candidate, cfg))
+    return(normalizePath(candidate, winslash = "/", mustWork = FALSE))
+  }
+
+  if (nzchar(.iv_core_src_dir)) {
+    return(normalizePath(file.path(.iv_core_src_dir, "..", "..", "dflmx-R", "out", "factors.csv"), winslash = "/", mustWork = FALSE))
+  }
+  normalizePath(file.path("econark-r", "dflmx-R", "out", "factors.csv"), winslash = "/", mustWork = FALSE)
+}
+
+iv_attach_factor_instruments <- function(df, instrument_cols, factors_csv = NULL, cfg = list()) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  declared <- unique(trimws(as.character(instrument_cols)))
+  declared <- declared[nzchar(declared)]
+  missing <- setdiff(declared, names(out))
+  if (length(missing) == 0L || !"quarter_end" %in% names(out)) return(out)
+
+  factors_path <- iv_resolve_factors_csv(cfg = cfg, factors_csv = factors_csv)
+  if (!nzchar(factors_path) || !file.exists(factors_path)) return(out)
+
+  factors <- tryCatch(utils::read.csv(factors_path, stringsAsFactors = FALSE), error = function(e) NULL)
+  if (is.null(factors) || !"quarter_end" %in% names(factors)) return(out)
+
+  available <- intersect(missing, names(factors))
+  if (length(available) == 0L) return(out)
+
+  factor_key <- iv_date_key(factors$quarter_end)
+  keep <- !is.na(factor_key)
+  if (!any(keep)) return(out)
+  factors <- factors[keep, , drop = FALSE]
+  factor_key <- factor_key[keep]
+  factors <- factors[!duplicated(factor_key, fromLast = TRUE), , drop = FALSE]
+  factor_key <- factor_key[!duplicated(factor_key, fromLast = TRUE)]
+
+  data_key <- iv_date_key(out$quarter_end)
+  for (col in available) {
+    mapped <- factors[[col]][match(data_key, factor_key)]
+    out[[col]] <- suppressWarnings(as.numeric(mapped))
+  }
+  out
+}
+
+iv_resolve_design_columns <- function(df, spec = list(), instrument_override = NULL, factors_csv = NULL, cfg = list()) {
+  df <- as.data.frame(df, stringsAsFactors = FALSE)
+  treatment_label <- iv_select_first_existing(spec, c("treatment", "endogenous", "d", "t", "treat", "treatment_var"))
+  outcome_label <- iv_select_first_existing(spec, c("outcome", "y", "outcome_var", "target"))
+
+  treatment <- treatment_label
+  outcome <- outcome_label
+  if (!nzchar(treatment) || !treatment %in% names(df)) {
+    if ("D" %in% names(df)) treatment <- "D"
+  }
+  if (!nzchar(outcome) || !outcome %in% names(df)) {
+    if ("Y" %in% names(df)) outcome <- "Y"
+  }
+  if (!nzchar(treatment) || !treatment %in% names(df)) stop(sprintf("Missing treatment column in design data: %s", treatment))
+  if (!nzchar(outcome) || !outcome %in% names(df)) stop(sprintf("Missing outcome column in design data: %s", outcome))
+
+  original_names <- names(df)
+  declared_instruments <- iv_extract_instrument_columns(spec = spec, instrument_override = instrument_override, available_names = names(df))
+  df <- iv_attach_factor_instruments(df, declared_instruments, factors_csv = factors_csv, cfg = cfg)
+  instrument_cols <- unique(declared_instruments[declared_instruments %in% names(df)])
+  attached_instrument_cols <- setdiff(instrument_cols, original_names)
 
   w_candidates <- unique(c(
     iv_coerce_list(spec$w_cols),
@@ -75,7 +162,10 @@ iv_resolve_design_columns <- function(df, spec = list(), instrument_override = N
     outcome = outcome,
     treatment_label = if (nzchar(treatment_label)) treatment_label else treatment,
     outcome_label = if (nzchar(outcome_label)) outcome_label else outcome,
+    data = df,
     instrument_cols = instrument_cols,
+    declared_instruments = declared_instruments,
+    attached_instrument_cols = attached_instrument_cols,
     w_cols = w_cols
   )
 }

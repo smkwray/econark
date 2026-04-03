@@ -571,26 +571,26 @@ coflow_fit_vecm_window <- function(level_df, target, candidate_columns, exog_df 
 coflow_safe_engle_granger <- function(y_level, x_level) {
   y <- as.numeric(y_level)
   x <- as.matrix(x_level)
-  if (length(y) != nrow(x)) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_))
+  if (length(y) != nrow(x)) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_, coint_p_source = "phillips_ouliaris_bucket", coint_p_is_bucketed = TRUE))
 
   valid <- is.finite(y) & rowSums(is.finite(x)) == ncol(x)
   y <- y[valid]
   x <- x[valid, , drop = FALSE]
-  if (nrow(x) < 24) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_))
+  if (nrow(x) < 24) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_, coint_p_source = "phillips_ouliaris_bucket", coint_p_is_bucketed = TRUE))
 
   x_names <- make.names(colnames(x), unique = TRUE)
-  if (length(x_names) == 0L) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_))
+  if (length(x_names) == 0L) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_, coint_p_source = "phillips_ouliaris_bucket", coint_p_is_bucketed = TRUE))
 
   rhs <- paste(x_names, collapse = " + ")
   df <- data.frame(y = y, x, check.names = FALSE)
   colnames(df) <- c("y", x_names)
 
   df <- df[stats::complete.cases(df), , drop = FALSE]
-  if (nrow(df) < 24) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_))
+  if (nrow(df) < 24) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_, coint_p_source = "phillips_ouliaris_bucket", coint_p_is_bucketed = TRUE))
 
   form <- stats::as.formula(sprintf("y ~ %s", rhs))
   fit <- tryCatch(stats::lm(form, data = df), error = function(e) NULL)
-  if (is.null(fit)) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_))
+  if (is.null(fit)) return(list(beta = NA_real_, beta_p = NA_real_, coint_p = NA_real_, coint_p_source = "phillips_ouliaris_bucket", coint_p_is_bucketed = TRUE))
   sm <- summary(fit)
 
   if (length(x_names) > 1L) {
@@ -606,7 +606,13 @@ coflow_safe_engle_granger <- function(y_level, x_level) {
     error = function(e) NULL
   )
   coint_p <- coflow_po_bucket_p(po)
-  list(beta = beta, beta_p = beta_p, coint_p = coint_p)
+  list(
+    beta = beta,
+    beta_p = beta_p,
+    coint_p = coint_p,
+    coint_p_source = "phillips_ouliaris_bucket",
+    coint_p_is_bucketed = TRUE
+  )
 }
 
 coflow_johansen_crit_col <- function(alpha) {
@@ -751,8 +757,9 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
     }
 
     coint_rank <- if (is.finite(as.numeric(jh$rank))) as.integer(jh$rank) else coflow_resolve_coint_rank(eg$coint_p, coint_alpha = coint_alpha)
-    coint_method_used <- if (is.finite(as.numeric(jh$rank))) as.character(jh$method) else "engle_granger_proxy"
+    coint_method_used <- if (is.finite(as.numeric(jh$rank))) as.character(jh$method) else "engle_granger_fallback_bucketed"
     coint_selected_lag <- if (is.finite(as.numeric(jh$lag))) as.integer(jh$lag) else NA_integer_
+    coint_p_used_for_rank <- !is.finite(as.numeric(jh$rank))
     fit_res <- NULL
     if (coint_rank > 0L) {
       fit_res <- coflow_fit_vecm_window(
@@ -813,6 +820,9 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
       beta_p = as.numeric(ifelse(is.finite(fit_res$beta_p), fit_res$beta_p, eg$beta_p)),
       coint_method_requested = as.character(method_mode),
       coint_p = as.numeric(eg$coint_p),
+      coint_p_source = as.character(eg$coint_p_source),
+      coint_p_is_bucketed = as.logical(eg$coint_p_is_bucketed),
+      coint_p_used_for_rank = as.logical(coint_p_used_for_rank),
       coint_rank = as.integer(ifelse(is.finite(fit_res$coint_rank), fit_res$coint_rank, coint_rank)),
       coint_method = as.character(coint_method_used),
       coint_selected_lag = as.integer(ifelse(is.finite(fit_res$coint_selected_lag), fit_res$coint_selected_lag, coint_selected_lag)),

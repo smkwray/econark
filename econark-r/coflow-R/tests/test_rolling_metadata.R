@@ -59,6 +59,10 @@ run_test("Rolling output includes required metadata columns", function() {
   .assert(all(as.Date(df$window_start) <= as.Date(df$window_end)), "window_start must be <= window_end")
   .assert(all(nzchar(as.character(df$coint_method_requested))), "coint_method_requested should be non-empty")
   .assert(all(nzchar(as.character(df$coint_method))), "coint_method should be non-empty")
+  .assert("coint_p_source" %in% names(df), "expected coint_p_source metadata column")
+  .assert("coint_p_is_bucketed" %in% names(df), "expected coint_p_is_bucketed metadata column")
+  .assert("coint_p_used_for_rank" %in% names(df), "expected coint_p_used_for_rank metadata column")
+  .assert(all(df$coint_method != "engle_granger_proxy"), "legacy proxy label should not be emitted")
 })
 
 run_test("Rolling engine emits fitted-model stats and uses exogenous controls", function() {

@@ -17,19 +17,21 @@ run_dml_iv <- function(
 ) {
   df <- utils::read.csv(design_csv, stringsAsFactors = FALSE)
   spec <- iv_read_spec_meta(meta_json)
-  cols <- iv_resolve_design_columns(df, spec = spec)
+  cols <- iv_resolve_design_columns(df, spec = spec, cfg = cfg)
+  df <- cols$data
 
   out_dir_raw <- .cfg_or(cfg, "DML_IV_OUT_DIR", .cfg_or(cfg, "DML_OUT_DIR", file.path(.cfg_or(cfg, "OUT_DIR", "."), "dml")))
   out_dir <- resolve_cfg_path(out_dir_raw, cfg)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   stem <- sub("^design_", "", sub("\\.csv$", "", basename(design_csv)))
   out_json <- file.path(out_dir, paste0("dml_iv_", stem, ".json"))
+  run_id <- iv_new_run_id("dml_iv")
 
   analysis_cols <- unique(c(cols$outcome, cols$treatment, cols$instrument_cols, cols$w_cols))
   work <- iv_prepare_numeric_frame(df[, analysis_cols, drop = FALSE])
   if (nrow(work) < 30) {
     payload <- list(
-      run_id = paste0(format(Sys.time(), "%Y%m%dT%H%M%S"), "_dml_iv"),
+      run_id = run_id,
       estimator = "dml_iv",
       skip_reason = "insufficient_design",
       n = nrow(work),
@@ -75,7 +77,7 @@ run_dml_iv <- function(
   z_pool <- if (length(cols$instrument_cols) > 0L) work[, cols$instrument_cols, drop = FALSE] else data.frame()
   if (ncol(z_pool) == 0L) {
     payload <- list(
-      run_id = paste0(format(Sys.time(), "%Y%m%dT%H%M%S"), "_dml_iv"),
+      run_id = run_id,
       estimator = "dml_iv",
       skip_reason = "no_instrument",
       n = nrow(work),
@@ -121,7 +123,7 @@ run_dml_iv <- function(
   iv_pick <- iv_select_instrument(work[[cols$treatment]], z_pool, z_max = z_max_i, z_select = z_select_v)
   if (is.null(iv_pick$name) || !nzchar(iv_pick$name)) {
     payload <- list(
-      run_id = paste0(format(Sys.time(), "%Y%m%dT%H%M%S"), "_dml_iv"),
+      run_id = run_id,
       estimator = "dml_iv",
       skip_reason = "no_instrument",
       n = nrow(work),
@@ -152,24 +154,29 @@ run_dml_iv <- function(
     append_results(resolve_cfg_path(cfg$RESULTS_CSV, cfg), row)
     return(payload)
   }
+  iv_used_cols <- unique(intersect(iv_pick$candidates, names(z_pool)))
+  if (length(iv_used_cols) == 0L) iv_used_cols <- cols$instrument_cols
 
   fit <- iv_fit_dml(
     y = work[[cols$outcome]],
     d = work[[cols$treatment]],
     w_frame = if (isTRUE(include_w_b)) w else data.frame(),
-    z_frame = z_pool[, iv_pick$name, drop = FALSE],
+    z_frame = z_pool[, iv_used_cols, drop = FALSE],
     hac_lags = hac_lags_i,
     folds = folds_i
   )
   if (!is.null(fit$skip_reason)) {
     payload <- list(
-      run_id = paste0(format(Sys.time(), "%Y%m%dT%H%M%S"), "_dml_iv"),
+      run_id = run_id,
       estimator = "dml_iv",
       skip_reason = fit$skip_reason,
       n = nrow(work),
       design = design_csv,
       spec = spec,
-      iv = list(instrument = iv_pick$name)
+      iv = list(
+        instrument = paste(iv_used_cols, collapse = "|"),
+        representative_instrument = iv_pick$name
+      )
     )
     write_json(out_json, payload)
     row <- data.frame(
@@ -197,7 +204,6 @@ run_dml_iv <- function(
   }
 
   clr <- weak_iv_clr_proxy(fit$beta, fit$se, fit$first_stage_f, min_first_stage_f = min_f)
-  run_id <- paste0(format(Sys.time(), "%Y%m%dT%H%M%S"), "_dml_iv")
   payload <- list(
     run_id = run_id,
     estimator = "dml_iv",
@@ -212,8 +218,12 @@ run_dml_iv <- function(
     inference_method = fit$inference_method,
     folds = as.integer(fit$folds),
     iv = list(
-      instrument = iv_pick$name,
-      declared_instruments = cols$instrument_cols,
+      instrument = paste(iv_used_cols, collapse = "|"),
+      representative_instrument = iv_pick$name,
+      declared_instruments = cols$declared_instruments,
+      resolved_instruments = cols$instrument_cols,
+      screened_instruments = iv_used_cols,
+      factor_instruments_attached = cols$attached_instrument_cols,
       z_select = z_select_v,
       z_max = z_max_i,
       include_w = include_w_b,
@@ -228,7 +238,7 @@ run_dml_iv <- function(
   notes <- sprintf(
     "%s; iv=%s; folds=%d; first_stage_f=%.3f; weak_iv=%s; clr_p=%.4f",
     as.character(fit$inference_method),
-    iv_pick$name,
+    paste(iv_used_cols, collapse = "|"),
     as.integer(fit$folds),
     as.numeric(fit$first_stage_f),
     ifelse(isTRUE(clr$weak_iv_flag), "yes", "no"),
