@@ -186,6 +186,23 @@ if (length(expected_auto_w) == 0L) stop("auto-selected controls fixture did not 
 if (!identical(as.character(lp_auto_out$iv$w_cols_selected), expected_auto_w)) stop("lp_iv auto-selected controls should come from full design frame")
 if (!identical(as.character(dml_auto_out$iv$w_cols_selected), expected_auto_w)) stop("dml_iv auto-selected controls should come from full design frame")
 
+edge_df <- data.frame(
+  D = c(1, 2, 3, 4),
+  Y = c(NA, NA, 1, 2),
+  z_decl_1 = c(1, 0, 1, 0),
+  w_valid = c(0, 1, 2, 3),
+  w_undef = c(5, 6, NA, NA)
+)
+edge_selected <- iv_select_w_columns(
+  df = edge_df,
+  treatment = "D",
+  outcome = "Y",
+  instrument_cols = "z_decl_1",
+  configured_w = character(),
+  w_max = 2
+)
+if (!identical(as.character(edge_selected), "w_valid")) stop("undefined-correlation controls should be dropped before w_max capping")
+
 design_degenerate <- transform(design, z_flat = 1)
 design_degenerate_csv <- file.path(tmp, "design_treat_out_h1_degenerate.csv")
 utils::write.csv(design_degenerate, design_degenerate_csv, row.names = FALSE)
@@ -234,5 +251,7 @@ stopifnot(all(!is.na(as.POSIXct(iv_rows$run_timestamp_utc, format = "%Y-%m-%dT%H
 stopifnot(all(as.character(iv_rows$run_config_id) == "config_dass.iv_contract_test"))
 stopifnot(all(as.character(iv_rows$run_config_path) == cfg_path))
 stopifnot(all(as.character(iv_rows$run_stage_id) %in% c("lp_iv", "dml_iv")))
+deg_rows <- iv_rows[grepl("z_decl_1\\|z_decl_2", iv_rows$notes) & !grepl("z_flat", iv_rows$notes), , drop = FALSE]
+if (nrow(deg_rows) < 2L) stop("results notes should report the actual post-screening IV set without dropped degenerate instruments")
 
 cat("PASS test_weak_iv_contract rows=", nrow(results), "\n", sep = "")

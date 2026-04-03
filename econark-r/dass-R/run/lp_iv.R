@@ -252,7 +252,7 @@ run_lp_iv <- function(
   notes <- sprintf(
     "%s; iv=%s; first_stage_f_eff=%.3f; weak_iv=%s; clr_p=%.4f",
     as.character(fit$inference_method),
-    paste(iv_used_cols, collapse = "|"),
+    paste(actual_iv_cols, collapse = "|"),
     as.numeric(fit$first_stage_f_eff),
     ifelse(isTRUE(clr$weak_iv_flag), "yes", "no"),
     as.numeric(clr$clr_p)

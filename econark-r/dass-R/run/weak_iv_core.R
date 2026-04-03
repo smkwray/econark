@@ -87,8 +87,9 @@ iv_select_w_columns <- function(df, treatment, outcome, instrument_cols, configu
   corr <- vapply(base, function(col) {
     suppressWarnings(abs(stats::cor(base_num[[col]], outcome_num, use = "pairwise.complete.obs")))
   }, numeric(1))
-  corr[!is.finite(corr)] <- -Inf
-  keep <- base[order(-corr, seq_along(base))]
+  keep_idx <- which(is.finite(corr))
+  if (length(keep_idx) == 0L) return(character())
+  keep <- base[keep_idx][order(-corr[keep_idx], keep_idx)]
   unique(keep[seq_len(min(length(keep), w_max_i))])
 }
 
