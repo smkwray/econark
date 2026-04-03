@@ -109,15 +109,20 @@ run_dml_iv <- function(
     return(payload)
   }
 
-  w <- if (length(cols$w_cols) > 0L) work[, cols$w_cols, drop = FALSE] else data.frame()
+  w_max_i <- suppressWarnings(as.integer(ifelse(is.null(w_max), .cfg_or(cfg, "DML_IV_W_MAX", .cfg_or(cfg, "IV_W_MAX", NA)), w_max)))
+  w_selected <- iv_select_w_columns(
+    df = work,
+    treatment = cols$treatment,
+    outcome = cols$outcome,
+    instrument_cols = cols$instrument_cols,
+    configured_w = cols$w_cols,
+    w_max = w_max_i
+  )
+  w <- if (length(w_selected) > 0L) work[, w_selected, drop = FALSE] else data.frame()
   if (ncol(w) > 0L) {
     keep <- vapply(w, function(x) any(is.finite(x)), logical(1))
     w <- w[, keep, drop = FALSE]
-  }
-  w_max_i <- suppressWarnings(as.integer(ifelse(is.null(w_max), .cfg_or(cfg, "DML_IV_W_MAX", .cfg_or(cfg, "IV_W_MAX", NA)), w_max)))
-  if (is.finite(w_max_i) && w_max_i > 0 && ncol(w) > w_max_i) {
-    keep_w <- choose_w_cols(w, work[[cols$treatment]], w_max = w_max_i, w_select = "corr_t_then_variance")
-    w <- w[, keep_w, drop = FALSE]
+    w_selected <- names(w)
   }
 
   iv_pick <- iv_select_instrument(work[[cols$treatment]], z_pool, z_max = z_max_i, z_select = z_select_v)
@@ -154,8 +159,7 @@ run_dml_iv <- function(
     append_results(resolve_cfg_path(cfg$RESULTS_CSV, cfg), row)
     return(payload)
   }
-  iv_used_cols <- unique(intersect(iv_pick$candidates, names(z_pool)))
-  if (length(iv_used_cols) == 0L) iv_used_cols <- cols$instrument_cols
+  iv_used_cols <- cols$instrument_cols
 
   fit <- iv_fit_dml(
     y = work[[cols$outcome]],
@@ -224,6 +228,7 @@ run_dml_iv <- function(
       resolved_instruments = cols$instrument_cols,
       screened_instruments = iv_used_cols,
       factor_instruments_attached = cols$attached_instrument_cols,
+      w_cols_selected = w_selected,
       z_select = z_select_v,
       z_max = z_max_i,
       include_w = include_w_b,

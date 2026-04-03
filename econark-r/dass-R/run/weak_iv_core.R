@@ -67,6 +67,31 @@ iv_extract_instrument_columns <- function(spec = list(), instrument_override = N
   unique(instrument_cols[nzchar(instrument_cols)])
 }
 
+iv_select_w_columns <- function(df, treatment, outcome, instrument_cols, configured_w = character(), w_max = NULL) {
+  data <- as.data.frame(df, stringsAsFactors = FALSE)
+  configured <- unique(trimws(as.character(configured_w)))
+  configured <- configured[nzchar(configured) & configured %in% names(data)]
+
+  w_max_i <- suppressWarnings(as.integer(w_max))
+  if (!is.finite(w_max_i) || w_max_i <= 0L) return(configured)
+
+  if (length(configured) == 0L) {
+    base <- setdiff(names(data), c(treatment, outcome, instrument_cols))
+  } else {
+    base <- configured
+  }
+  if (length(base) == 0L) return(character())
+
+  base_num <- iv_prepare_numeric_frame(data[, base, drop = FALSE])
+  outcome_num <- suppressWarnings(as.numeric(data[[outcome]]))
+  corr <- vapply(base, function(col) {
+    suppressWarnings(abs(stats::cor(base_num[[col]], outcome_num, use = "pairwise.complete.obs")))
+  }, numeric(1))
+  corr[!is.finite(corr)] <- -Inf
+  keep <- base[order(-corr, seq_along(base))]
+  unique(keep[seq_len(min(length(keep), w_max_i))])
+}
+
 iv_resolve_factors_csv <- function(cfg = list(), factors_csv = NULL) {
   candidate <- ""
   if (!is.null(factors_csv) && nzchar(trimws(as.character(factors_csv)))) {
@@ -181,10 +206,7 @@ iv_select_instrument <- function(d, z_frame, z_max = 40L, z_select = "corr_t_the
   z <- z[, keep, drop = FALSE]
   if (ncol(z) == 0) return(list(name = NULL, candidates = character(), scores = numeric()))
 
-  z_max_i <- suppressWarnings(as.integer(z_max))
-  if (!is.finite(z_max_i) || z_max_i <= 0) z_max_i <- ncol(z)
-  candidates <- if (ncol(z) > z_max_i) choose_w_cols(z, d, w_max = z_max_i, w_select = z_select) else names(z)
-  candidates <- intersect(candidates, names(z))
+  candidates <- names(z)
   if (length(candidates) == 0) return(list(name = NULL, candidates = character(), scores = numeric()))
 
   d_num <- as.numeric(d)
