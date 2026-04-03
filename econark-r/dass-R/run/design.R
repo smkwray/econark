@@ -90,12 +90,31 @@ build_shock_residual_oos <- function(d_diff, w, folds, oos_mode = "expanding", l
     wcols <- if (!is.null(w_max) && ncol(w) > w_max) choose_w_cols(w[train, , drop = FALSE], d_diff[train], w_max = w_max, w_select = w_select) else colnames(w)
     x_train <- w[train, wcols, drop = FALSE]
     x_test <- w[test, wcols, drop = FALSE]
-    w_cols_used_by_fold[[fold_key]] <- as.integer(length(wcols))
+    if (ncol(x_train) > 0) {
+      keep_train_cols <- vapply(x_train, function(col) any(is.finite(col)), logical(1))
+      x_train <- x_train[, keep_train_cols, drop = FALSE]
+      x_test <- x_test[, keep_train_cols, drop = FALSE]
+    }
+    w_cols_used_by_fold[[fold_key]] <- as.integer(ncol(x_train))
+
+    if (ncol(x_train) == 0) {
+      mu <- mean(d_diff[train], na.rm = TRUE)
+      if (is.finite(mu)) pred[test] <- mu
+      next
+    }
 
     for (c in names(x_train)) {
       med <- stats::median(x_train[[c]], na.rm = TRUE)
+      if (!is.finite(med)) med <- 0
       x_train[[c]][is.na(x_train[[c]])] <- med
       x_test[[c]][is.na(x_test[[c]])] <- med
+    }
+
+    train_complete <- stats::complete.cases(data.frame(d = d_diff[train], x_train))
+    if (sum(train_complete) <= 1L) {
+      mu <- mean(d_diff[train], na.rm = TRUE)
+      if (is.finite(mu)) pred[test] <- mu
+      next
     }
 
     if (requireNamespace("glmnet", quietly = TRUE)) {

@@ -108,7 +108,16 @@ run_iv_nc_contracts <- function(cfg, irf) {
     if (!is.finite(nc_p_min) || nc_p_min < 0) nc_p_min <- 0.20
 
     iv_candidates <- mine_iv_candidates(irf, topk_per_treatment = iv_topk, p_max = iv_p_max)
-    nc_candidates <- mine_negative_control_candidates(irf, topk_per_outcome = nc_topk, p_min = nc_p_min)
+    nc_candidates <- mine_negative_control_candidates(
+      irf,
+      topk_per_outcome = nc_topk,
+      p_min = nc_p_min,
+      enforce_allowlist = isTRUE(.ivnc_cfg_or(cfg, "IVNC_NC_ENFORCE_ALLOWLIST", FALSE)),
+      allowlist = as.character(.ivnc_cfg_or(cfg, "IVNC_NC_ALLOWLIST", character())),
+      allowlist_regex = as.character(.ivnc_cfg_or(cfg, "IVNC_NC_ALLOWLIST_REGEX", character())),
+      blocklist = as.character(.ivnc_cfg_or(cfg, "IVNC_NC_BLOCKLIST", character())),
+      blocklist_regex = as.character(.ivnc_cfg_or(cfg, "IVNC_NC_BLOCKLIST_REGEX", character()))
+    )
   }
 
   irf_outcomes <- if (is.null(irf) || nrow(irf) == 0) {

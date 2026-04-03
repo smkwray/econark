@@ -2,6 +2,7 @@
   path <- as.character(cfg$DASS_CONFIG_R)
   if (!file.exists(path)) return(list())
   env <- new.env(parent = baseenv())
+  env$`.__CONFIG_PATH__` <- path
   sys.source(path, envir = env)
   jobs <- if (exists("DESIGN_JOBS", envir = env, inherits = FALSE)) get("DESIGN_JOBS", envir = env) else list()
   out <- list()

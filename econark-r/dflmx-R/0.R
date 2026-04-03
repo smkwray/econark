@@ -41,6 +41,7 @@ source(file.path(run_dir, "iv_candidate_miner.R"))
 source(file.path(run_dir, "negative_control_miner.R"))
 source(file.path(run_dir, "iv_nc_contracts.R"))
 source(file.path(run_dir, "confirmatory_inference.R"))
+source(file.path(run_dir, "contracts.R"))
 source(file.path(run_dir, "robustness_manifest.R"))
 source(file.path(run_dir, "propagate.R"))
 source(file.path(run_dir, "report.R"))
@@ -51,15 +52,17 @@ cfg_path <- args$config
 if (!grepl("^/", cfg_path)) cfg_path <- file.path(root_dir, cfg_path)
 cfg <- dflmx_load_config(cfg_path)
 
-stages <- c("build_panel", "extract", "propagate", "report")
+stages <- c("build_panel", "extract", "propagate", "contracts", "report")
 start_idx <- if (args$stage == "all") 1L else match(args$stage, stages)
 if (is.na(start_idx)) stop(sprintf("Unsupported --stage: %s", args$stage))
+run_stages <- if (isTRUE(args$dry_run) && args$stage != "all") stages[start_idx] else stages[start_idx:length(stages)]
 
-for (s in stages[start_idx:length(stages)]) {
+for (s in run_stages) {
   message(sprintf("[DFLMX-R] stage: %s", s))
   if (s == "build_panel") run_build_panel(cfg, dry_run = args$dry_run)
   if (s == "extract") run_extract(cfg, dry_run = args$dry_run)
   if (s == "propagate") run_propagate(cfg, dry_run = args$dry_run)
+  if (s == "contracts") run_contracts_stage(cfg, dry_run = args$dry_run)
   if (s == "report") run_report_stage(cfg, dry_run = args$dry_run)
 }
 

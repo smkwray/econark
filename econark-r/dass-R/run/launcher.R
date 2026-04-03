@@ -16,7 +16,7 @@
   out
 }
 
-run_launcher <- function(config_path) {
+run_launcher <- function(config_path, stage = "all") {
   cfg <- dass_load_config(config_path)
   set_results_provenance_context(cfg)
   on.exit(clear_results_provenance_context(), add = TRUE)
@@ -45,6 +45,12 @@ run_launcher <- function(config_path) {
   dir.create(resolve_cfg_path(.cfg_or("IDKIT_OUT_DIR", file.path(cfg$OUT_DIR, "id")), cfg), recursive = TRUE, showWarnings = FALSE)
 
   run_prep(cfg, include_quarter_end = cfg$PREP_INCLUDE_QUARTER_END, out_csv = resolve_cfg_path(cfg$OUT_CSV, cfg), out_meta = resolve_cfg_path(cfg$OUT_META_MD, cfg))
+
+  if (identical(stage, "validate")) {
+    message("[dass-R] stage=validate; prep complete.")
+    run_optional_manifest()
+    return(invisible(TRUE))
+  }
 
   defaults <- if (is.null(cfg$DESIGN_DEFAULTS)) list() else cfg$DESIGN_DEFAULTS
   jobs <- .expand_jobs(cfg$DESIGN_JOBS, defaults)

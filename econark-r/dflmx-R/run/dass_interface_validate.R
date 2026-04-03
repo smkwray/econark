@@ -253,6 +253,7 @@
 
   env <- new.env(parent = baseenv())
   load_err <- tryCatch({
+    env$`.__CONFIG_PATH__` <- dass_config
     sys.source(dass_config, envir = env)
     NULL
   }, error = function(e) as.character(e$message))
