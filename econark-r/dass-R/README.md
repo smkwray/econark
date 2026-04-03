@@ -9,7 +9,7 @@ All commands below assume cwd is `code/dass-R` unless noted.
 - `design`: construct design matrices for treatment/outcome/horizon
 - `lp`: reduced-form local projection style OLS + robust SE fallback
 - `dml`: defensible double-ML style residual-on-residual estimator
-- `tmle`: binary-treatment AIPW/TMLE-style estimator
+- `tmle`: binary-treatment targeting-update estimator with HAC influence-curve SE
 - `cf`: causal-forest-like stage (grf when available, defensible fallback otherwise)
 - `report`: compact markdown summary
   - writes `out/estimator_diagnostics.csv` with edge-case/quality checks per estimator

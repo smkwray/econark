@@ -8,7 +8,7 @@ Pipeline:
 3. Run rolling pair analysis for each target-candidate pair:
    - residual correlation (stationary panel),
    - lag-exclusion block causality tests (`anova` on nested lag models),
-   - Johansen-trace cointegration rank switching (fallback: Engle-Granger proxy).
+   - Johansen-trace cointegration rank switching (fallback: Phillips-Ouliaris-style bucketed cointegration screen).
 4. Apply BH q-values across candidate-window tests (per target/window setup).
 5. Score and rank candidates in three modes:
    - `positive`: strongest positive association,
