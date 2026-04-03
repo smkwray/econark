@@ -26,15 +26,13 @@ run_dml_iv <- function(
   stem <- sub("^design_", "", sub("\\.csv$", "", basename(design_csv)))
   out_json <- file.path(out_dir, paste0("dml_iv_", stem, ".json"))
   run_id <- iv_new_run_id("dml_iv")
-
-  analysis_cols <- unique(c(cols$outcome, cols$treatment, cols$instrument_cols, cols$w_cols))
-  work <- iv_prepare_numeric_frame(df[, analysis_cols, drop = FALSE])
-  if (nrow(work) < 30) {
+  design_num <- iv_prepare_numeric_frame(df)
+  if (nrow(design_num) < 30) {
     payload <- list(
       run_id = run_id,
       estimator = "dml_iv",
       skip_reason = "insufficient_design",
-      n = nrow(work),
+      n = nrow(design_num),
       design = design_csv,
       spec = spec
     )
@@ -54,7 +52,7 @@ run_dml_iv <- function(
       ci_low = NA_real_,
       ci_high = NA_real_,
       p = NA_real_,
-      n = nrow(work),
+      n = nrow(design_num),
       notes = "skip:insufficient_design",
       design = design_csv,
       stringsAsFactors = FALSE
@@ -74,13 +72,13 @@ run_dml_iv <- function(
   folds_i <- suppressWarnings(as.integer(ifelse(is.null(folds), .cfg_or(cfg, "DML_IV_FOLDS", 5L), folds)))
   if (!is.finite(folds_i) || folds_i < 2) folds_i <- 5L
 
-  z_pool <- if (length(cols$instrument_cols) > 0L) work[, cols$instrument_cols, drop = FALSE] else data.frame()
+  z_pool <- if (length(cols$instrument_cols) > 0L) design_num[, cols$instrument_cols, drop = FALSE] else data.frame()
   if (ncol(z_pool) == 0L) {
     payload <- list(
       run_id = run_id,
       estimator = "dml_iv",
       skip_reason = "no_instrument",
-      n = nrow(work),
+      n = nrow(design_num),
       design = design_csv,
       spec = spec
     )
@@ -100,7 +98,7 @@ run_dml_iv <- function(
       ci_low = NA_real_,
       ci_high = NA_real_,
       p = NA_real_,
-      n = nrow(work),
+      n = nrow(design_num),
       notes = "skip:no_instrument",
       design = design_csv,
       stringsAsFactors = FALSE
@@ -111,13 +109,15 @@ run_dml_iv <- function(
 
   w_max_i <- suppressWarnings(as.integer(ifelse(is.null(w_max), .cfg_or(cfg, "DML_IV_W_MAX", .cfg_or(cfg, "IV_W_MAX", NA)), w_max)))
   w_selected <- iv_select_w_columns(
-    df = work,
+    df = design_num,
     treatment = cols$treatment,
     outcome = cols$outcome,
     instrument_cols = cols$instrument_cols,
     configured_w = cols$w_cols,
     w_max = w_max_i
   )
+  analysis_cols <- unique(c(cols$outcome, cols$treatment, cols$instrument_cols, w_selected))
+  work <- design_num[, analysis_cols, drop = FALSE]
   w <- if (length(w_selected) > 0L) work[, w_selected, drop = FALSE] else data.frame()
   if (ncol(w) > 0L) {
     keep <- vapply(w, function(x) any(is.finite(x)), logical(1))
@@ -131,7 +131,7 @@ run_dml_iv <- function(
       run_id = run_id,
       estimator = "dml_iv",
       skip_reason = "no_instrument",
-      n = nrow(work),
+      n = nrow(design_num),
       design = design_csv,
       spec = spec
     )
@@ -151,7 +151,7 @@ run_dml_iv <- function(
       ci_low = NA_real_,
       ci_high = NA_real_,
       p = NA_real_,
-      n = nrow(work),
+      n = nrow(design_num),
       notes = "skip:no_instrument",
       design = design_csv,
       stringsAsFactors = FALSE
@@ -170,6 +170,7 @@ run_dml_iv <- function(
     folds = folds_i
   )
   if (!is.null(fit$skip_reason)) {
+    actual_iv_cols <- if (!is.null(fit$used_instrument_cols)) as.character(fit$used_instrument_cols) else iv_used_cols
     payload <- list(
       run_id = run_id,
       estimator = "dml_iv",
@@ -178,8 +179,10 @@ run_dml_iv <- function(
       design = design_csv,
       spec = spec,
       iv = list(
-        instrument = paste(iv_used_cols, collapse = "|"),
-        representative_instrument = iv_pick$name
+        instrument = paste(actual_iv_cols, collapse = "|"),
+        representative_instrument = iv_pick$name,
+        screened_instruments = actual_iv_cols,
+        dropped_instruments = setdiff(iv_used_cols, actual_iv_cols)
       )
     )
     write_json(out_json, payload)
@@ -208,6 +211,8 @@ run_dml_iv <- function(
   }
 
   clr <- weak_iv_clr_proxy(fit$beta, fit$se, fit$first_stage_f_eff, min_first_stage_f = min_f)
+  actual_iv_cols <- if (!is.null(fit$used_instrument_cols)) as.character(fit$used_instrument_cols) else iv_used_cols
+  actual_w_cols <- if (!is.null(fit$used_control_cols)) as.character(fit$used_control_cols) else w_selected
   payload <- list(
     run_id = run_id,
     estimator = "dml_iv",
@@ -222,13 +227,14 @@ run_dml_iv <- function(
     inference_method = fit$inference_method,
     folds = as.integer(fit$folds),
     iv = list(
-      instrument = paste(iv_used_cols, collapse = "|"),
+      instrument = paste(actual_iv_cols, collapse = "|"),
       representative_instrument = iv_pick$name,
       declared_instruments = cols$declared_instruments,
       resolved_instruments = cols$instrument_cols,
-      screened_instruments = iv_used_cols,
+      screened_instruments = actual_iv_cols,
+      dropped_instruments = setdiff(iv_used_cols, actual_iv_cols),
       factor_instruments_attached = cols$attached_instrument_cols,
-      w_cols_selected = w_selected,
+      w_cols_selected = actual_w_cols,
       z_select = z_select_v,
       z_max = z_max_i,
       include_w = include_w_b,

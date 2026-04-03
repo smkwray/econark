@@ -664,6 +664,7 @@ iv_fit_2sls <- function(y, d, w_frame, z_frame, hac_lags = 4L, include_w = TRUE)
 
   y_num <- suppressWarnings(as.numeric(y))
   d_num <- suppressWarnings(as.numeric(d))
+  z_input_cols <- names(z)
 
   keep_z <- vapply(z, function(x) {
     x <- as.numeric(x)
@@ -747,6 +748,9 @@ iv_fit_2sls <- function(y, d, w_frame, z_frame, hac_lags = 4L, include_w = TRUE)
     underid_pvalue = fs_diag$underid_pvalue,
     underid_pvalue_method = fs_diag$underid_pvalue_method,
     partial_r2 = fs_diag$partial_r2,
+    used_instrument_cols = z_cols,
+    dropped_instrument_cols = setdiff(z_input_cols, z_cols),
+    used_control_cols = w_cols,
     inference_method = "iv_wald_hac"
   )
 }
@@ -754,6 +758,7 @@ iv_fit_2sls <- function(y, d, w_frame, z_frame, hac_lags = 4L, include_w = TRUE)
 iv_fit_dml <- function(y, d, w_frame, z_frame, hac_lags = 4L, folds = 5L) {
   z <- iv_prepare_numeric_frame(z_frame)
   if (ncol(z) == 0L) return(list(skip_reason = "no_instrument"))
+  z_input_cols <- names(z)
 
   w <- iv_prepare_numeric_frame(w_frame)
   keep_z <- vapply(z, function(x) {
@@ -823,6 +828,9 @@ iv_fit_dml <- function(y, d, w_frame, z_frame, hac_lags = 4L, folds = 5L) {
     underid_pvalue = fs_diag$underid_pvalue,
     underid_pvalue_method = fs_diag$underid_pvalue_method,
     partial_r2 = fs_diag$partial_r2,
+    used_instrument_cols = z_cols,
+    dropped_instrument_cols = setdiff(z_input_cols, z_cols),
+    used_control_cols = w_cols,
     inference_method = "orthogonal_hac",
     folds = max(2L, min(as.integer(folds), nrow(dat)))
   )

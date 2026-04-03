@@ -165,6 +165,47 @@ if (!identical(as.character(dml_factor_out$iv$instrument), "z_decl_1|z_factor|z_
 if (!identical(as.character(lp_factor_out$iv$factor_instruments_attached), "z_factor")) stop("lp_iv missing factor attachment metadata")
 if (!identical(as.character(dml_factor_out$iv$factor_instruments_attached), "z_factor")) stop("dml_iv missing factor attachment metadata")
 
+meta_auto_json <- file.path(tmp, "design_treat_out_h1_auto_meta.json")
+write_json(meta_auto_json, list(spec = list(
+  treatment = "D",
+  outcome = "Y",
+  instrument = c("z_decl_1", "z_decl_2", "z_decl_3"),
+  horizon = 1L
+)))
+lp_auto_out <- run_lp_iv(cfg, design_csv, meta_json = meta_auto_json)
+dml_auto_out <- run_dml_iv(cfg, design_csv, meta_json = meta_auto_json)
+expected_auto_w <- iv_select_w_columns(
+  df = iv_prepare_numeric_frame(design),
+  treatment = "D",
+  outcome = "Y",
+  instrument_cols = c("z_decl_1", "z_decl_2", "z_decl_3"),
+  configured_w = character(),
+  w_max = 2
+)
+if (length(expected_auto_w) == 0L) stop("auto-selected controls fixture did not bind")
+if (!identical(as.character(lp_auto_out$iv$w_cols_selected), expected_auto_w)) stop("lp_iv auto-selected controls should come from full design frame")
+if (!identical(as.character(dml_auto_out$iv$w_cols_selected), expected_auto_w)) stop("dml_iv auto-selected controls should come from full design frame")
+
+design_degenerate <- transform(design, z_flat = 1)
+design_degenerate_csv <- file.path(tmp, "design_treat_out_h1_degenerate.csv")
+utils::write.csv(design_degenerate, design_degenerate_csv, row.names = FALSE)
+meta_degenerate_json <- file.path(tmp, "design_treat_out_h1_degenerate_meta.json")
+write_json(meta_degenerate_json, list(spec = list(
+  treatment = "D",
+  outcome = "Y",
+  instrument = c("z_decl_1", "z_flat", "z_decl_2"),
+  control_cols = c("w_strong", "w_outcome", "w_bridge", "w_noise"),
+  horizon = 1L
+)))
+lp_degenerate_out <- run_lp_iv(cfg, design_degenerate_csv, meta_json = meta_degenerate_json)
+dml_degenerate_out <- run_dml_iv(cfg, design_degenerate_csv, meta_json = meta_degenerate_json)
+if (!identical(as.character(lp_degenerate_out$iv$instrument), "z_decl_1|z_decl_2")) stop("lp_iv should report only nondegenerate instruments used in estimation")
+if (!identical(as.character(dml_degenerate_out$iv$instrument), "z_decl_1|z_decl_2")) stop("dml_iv should report only nondegenerate instruments used in estimation")
+if (!identical(as.character(lp_degenerate_out$iv$dropped_instruments), "z_flat")) stop("lp_iv should report dropped degenerate instrument")
+if (!identical(as.character(dml_degenerate_out$iv$dropped_instruments), "z_flat")) stop("dml_iv should report dropped degenerate instrument")
+if (!identical(as.character(lp_degenerate_out$iv$declared_instruments), c("z_decl_1", "z_flat", "z_decl_2"))) stop("lp_iv should preserve declared degenerate instrument metadata")
+if (!identical(as.character(dml_degenerate_out$iv$declared_instruments), c("z_decl_1", "z_flat", "z_decl_2"))) stop("dml_iv should preserve declared degenerate instrument metadata")
+
 results <- utils::read.csv(cfg$RESULTS_CSV, stringsAsFactors = FALSE)
 if (!all(c("estimator", "notes", "estimate", "se", "p") %in% names(results))) {
   stop("results.csv missing required contract columns")
