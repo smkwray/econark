@@ -19,12 +19,13 @@ weak_iv_clr_proxy <- function(beta, se, first_stage_f, min_first_stage_f = 10) {
   ci_high_clr <- as.numeric(beta) + 1.96 * se_adj
 
   list(
+    weak_iv_method = "se_inflation_proxy",
     weak_iv_flag = weak_flag,
     first_stage_f = as.numeric(first_stage_f),
     min_first_stage_f = min_f,
-    clr_se = se_adj,
-    clr_p = p_clr,
-    clr_ci_low = ci_low_clr,
-    clr_ci_high = ci_high_clr
+    proxy_se = se_adj,
+    proxy_p = p_clr,
+    proxy_ci_low = ci_low_clr,
+    proxy_ci_high = ci_high_clr
   )
 }

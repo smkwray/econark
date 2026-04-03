@@ -83,13 +83,17 @@ on.exit(clear_results_provenance_context(), add = TRUE)
 lp_out <- run_lp_iv(cfg, design_csv, meta_json = meta_json)
 dml_out <- run_dml_iv(cfg, design_csv, meta_json = meta_json)
 
-must_have <- c("weak_iv_flag", "first_stage_f", "min_first_stage_f", "clr_se", "clr_p", "clr_ci_low", "clr_ci_high")
+must_have <- c("weak_iv_method", "weak_iv_flag", "first_stage_f", "min_first_stage_f", "proxy_se", "proxy_p", "proxy_ci_low", "proxy_ci_high")
 if (is.null(lp_out$weak_iv) || !all(must_have %in% names(lp_out$weak_iv))) {
   stop("lp_iv weak_iv contract fields missing")
 }
 if (is.null(dml_out$weak_iv) || !all(must_have %in% names(dml_out$weak_iv))) {
   stop("dml_iv weak_iv contract fields missing")
 }
+if (any(c("clr_se", "clr_p", "clr_ci_low", "clr_ci_high") %in% names(lp_out$weak_iv))) stop("lp_iv weak_iv payload should not claim literal CLR fields")
+if (any(c("clr_se", "clr_p", "clr_ci_low", "clr_ci_high") %in% names(dml_out$weak_iv))) stop("dml_iv weak_iv payload should not claim literal CLR fields")
+if (!identical(as.character(lp_out$weak_iv$weak_iv_method), "se_inflation_proxy")) stop("lp_iv weak_iv method label mismatch")
+if (!identical(as.character(dml_out$weak_iv$weak_iv_method), "se_inflation_proxy")) stop("dml_iv weak_iv method label mismatch")
 
 if (!is.finite(as.numeric(lp_out$iv$first_stage_f)) || !is.finite(as.numeric(dml_out$iv$first_stage_f))) {
   stop("first_stage_f must be finite")
@@ -253,5 +257,6 @@ stopifnot(all(as.character(iv_rows$run_config_path) == cfg_path))
 stopifnot(all(as.character(iv_rows$run_stage_id) %in% c("lp_iv", "dml_iv")))
 deg_rows <- iv_rows[grepl("z_decl_1\\|z_decl_2", iv_rows$notes) & !grepl("z_flat", iv_rows$notes), , drop = FALSE]
 if (nrow(deg_rows) < 2L) stop("results notes should report the actual post-screening IV set without dropped degenerate instruments")
+if (!all(grepl("weak_iv_proxy_p=", iv_rows$notes, fixed = TRUE) | grepl("^skip:", iv_rows$notes))) stop("results notes should label weak-IV proxy metrics honestly")
 
 cat("PASS test_weak_iv_contract rows=", nrow(results), "\n", sep = "")

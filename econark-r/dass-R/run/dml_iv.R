@@ -254,13 +254,13 @@ run_dml_iv <- function(
   write_json(out_json, payload)
 
   notes <- sprintf(
-    "%s; iv=%s; folds=%d; first_stage_f_eff=%.3f; weak_iv=%s; clr_p=%.4f",
+    "%s; iv=%s; folds=%d; first_stage_f_eff=%.3f; weak_iv=%s; weak_iv_proxy_p=%.4f",
     as.character(fit$inference_method),
     paste(actual_iv_cols, collapse = "|"),
     as.integer(fit$folds),
     as.numeric(fit$first_stage_f_eff),
     ifelse(isTRUE(clr$weak_iv_flag), "yes", "no"),
-    as.numeric(clr$clr_p)
+    as.numeric(clr$proxy_p)
   )
   row <- data.frame(
     run_id = run_id,
