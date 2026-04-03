@@ -203,7 +203,7 @@ run_dml_iv <- function(
     return(payload)
   }
 
-  clr <- weak_iv_clr_proxy(fit$beta, fit$se, fit$first_stage_f, min_first_stage_f = min_f)
+  clr <- weak_iv_clr_proxy(fit$beta, fit$se, fit$first_stage_f_eff, min_first_stage_f = min_f)
   payload <- list(
     run_id = run_id,
     estimator = "dml_iv",
@@ -228,19 +228,26 @@ run_dml_iv <- function(
       z_max = z_max_i,
       include_w = include_w_b,
       first_stage_f = fit$first_stage_f,
+      first_stage_f_proxy = fit$first_stage_f_proxy,
+      first_stage_f_method = fit$first_stage_f_method,
+      first_stage_f_eff = fit$first_stage_f_eff,
+      first_stage_f_eff_method = fit$first_stage_f_eff_method,
       first_stage_t = fit$first_stage_t,
-      first_stage_r2 = fit$first_stage_r2
+      first_stage_r2 = fit$first_stage_r2,
+      underid_pvalue = fit$underid_pvalue,
+      underid_pvalue_method = fit$underid_pvalue_method,
+      partial_r2 = fit$partial_r2
     ),
     weak_iv = clr
   )
   write_json(out_json, payload)
 
   notes <- sprintf(
-    "%s; iv=%s; folds=%d; first_stage_f=%.3f; weak_iv=%s; clr_p=%.4f",
+    "%s; iv=%s; folds=%d; first_stage_f_eff=%.3f; weak_iv=%s; clr_p=%.4f",
     as.character(fit$inference_method),
     paste(iv_used_cols, collapse = "|"),
     as.integer(fit$folds),
-    as.numeric(fit$first_stage_f),
+    as.numeric(fit$first_stage_f_eff),
     ifelse(isTRUE(clr$weak_iv_flag), "yes", "no"),
     as.numeric(clr$clr_p)
   )

@@ -96,8 +96,33 @@ if (!identical(as.character(lp_out$iv$declared_instruments), c("z_decl_1", "z_de
 if (!identical(as.character(dml_out$iv$declared_instruments), c("z_decl_1", "z_decl_2"))) stop("dml_iv declared_instruments mismatch")
 if (!identical(as.character(lp_out$iv$screened_instruments), c("z_decl_1", "z_decl_2"))) stop("lp_iv screened instrument set mismatch")
 if (!identical(as.character(dml_out$iv$screened_instruments), c("z_decl_1", "z_decl_2"))) stop("dml_iv screened instrument set mismatch")
+if (!identical(as.character(lp_out$iv$first_stage_f_method), "hac_wald_f_proxy_multi_z")) stop("lp_iv should report multi-Z joint HAC Wald proxy")
+if (!identical(as.character(dml_out$iv$first_stage_f_method), "hac_wald_f_proxy_multi_z")) stop("dml_iv should report multi-Z joint HAC Wald proxy")
+if (!grepl("^first_stage_f_eff_mop_hac_multi", as.character(lp_out$iv$first_stage_f_eff_method))) stop("lp_iv should report multi-Z effective-F method")
+if (!grepl("^first_stage_f_eff_mop_hac_multi", as.character(dml_out$iv$first_stage_f_eff_method))) stop("dml_iv should report multi-Z effective-F method")
+if (!is.finite(as.numeric(lp_out$iv$underid_pvalue)) || !is.finite(as.numeric(dml_out$iv$underid_pvalue))) stop("underidentification p-value must be finite for multi-Z test")
 if (!identical(as.character(lp_out$inference_method), "iv_wald_hac")) stop("lp_iv did not use IV Wald HAC inference")
 if (!identical(as.character(dml_out$inference_method), "orthogonal_hac")) stop("dml_iv did not use orthogonal HAC inference")
+
+fs_multi <- iv_first_stage_strength(
+  d = design$D,
+  z_frame = design[, c("z_decl_1", "z_decl_2"), drop = FALSE],
+  w_frame = design[, c("w_strong", "w2", "w3"), drop = FALSE],
+  hac_lags = cfg$IV_HAC_LAGS,
+  include_w = TRUE
+)
+if (!is.finite(as.numeric(fs_multi$first_stage_f_proxy)) || !is.finite(as.numeric(fs_multi$first_stage_t))) {
+  stop("multi-Z first-stage strength should be finite")
+}
+if (abs(as.numeric(fs_multi$first_stage_f_proxy) - as.numeric(fs_multi$first_stage_t)^2) < 1e-6) {
+  stop("multi-Z first-stage proxy should differ from max individual HAC t^2")
+}
+if (abs(as.numeric(lp_out$weak_iv$first_stage_f) - as.numeric(lp_out$iv$first_stage_f_eff)) > 1e-8) {
+  stop("lp_iv weak-IV payload should route through effective-F")
+}
+if (abs(as.numeric(dml_out$weak_iv$first_stage_f) - as.numeric(dml_out$iv$first_stage_f_eff)) > 1e-8) {
+  stop("dml_iv weak-IV payload should route through effective-F")
+}
 
 z_factor <- z_decl_2 + rnorm(n, sd = 0.05)
 design_factor <- subset(design, select = -z_decl_2)

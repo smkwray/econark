@@ -390,7 +390,7 @@ iv_orthogonal_se <- function(theta, d_res, z_res, y_res, hac_lags = 4L) {
   list(se = se, t = t_stat, p = p_value)
 }
 
-iv_first_stage_diag <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = TRUE) {
+iv_first_stage_strength <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = TRUE) {
   z <- iv_prepare_numeric_frame(z_frame)
   w <- iv_prepare_numeric_frame(w_frame)
 
@@ -400,7 +400,15 @@ iv_first_stage_diag <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = 
       first_stage_se = NA_real_,
       first_stage_t = NA_real_,
       first_stage_f = NA_real_,
-      first_stage_r2 = NA_real_
+      first_stage_f_proxy = NA_real_,
+      first_stage_f_method = "missing",
+      first_stage_f_eff = NA_real_,
+      first_stage_f_eff_method = "missing",
+      underid_pvalue = NA_real_,
+      underid_pvalue_method = "missing_instruments",
+      first_stage_r2 = NA_real_,
+      partial_r2 = NA_real_,
+      treatment_hat = rep(NA_real_, length(d))
     ))
   }
 
@@ -428,17 +436,31 @@ iv_first_stage_diag <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = 
       first_stage_se = NA_real_,
       first_stage_t = NA_real_,
       first_stage_f = NA_real_,
-      first_stage_r2 = NA_real_
+      first_stage_f_proxy = NA_real_,
+      first_stage_f_method = "missing",
+      first_stage_f_eff = NA_real_,
+      first_stage_f_eff_method = "missing",
+      underid_pvalue = NA_real_,
+      underid_pvalue_method = "missing_instruments",
+      first_stage_r2 = NA_real_,
+      partial_r2 = NA_real_,
+      treatment_hat = rep(NA_real_, length(d))
     ))
   }
 
   rhs <- c(z_safe, w_safe)
   fs_formula <- stats::as.formula(paste("D ~", paste(rhs, collapse = " + ")))
   fit <- stats::lm(fs_formula, data = dat)
+  fs_r2 <- summary(fit)$r.squared
+  fitted_vals <- rep(NA_real_, length(d))
+  row_idx <- as.integer(rownames(dat))
+  if (all(is.finite(row_idx))) fitted_vals[row_idx] <- as.numeric(fitted(fit))
+
   if (requireNamespace("sandwich", quietly = TRUE) && requireNamespace("lmtest", quietly = TRUE)) {
     vc <- sandwich::NeweyWest(fit, lag = as.integer(max(hac_lags, 0L)), prewhite = FALSE, adjust = TRUE)
     tab <- lmtest::coeftest(fit, vcov. = vc)
   } else {
+    vc <- stats::vcov(fit)
     tab <- summary(fit)$coefficients
   }
 
@@ -450,7 +472,15 @@ iv_first_stage_diag <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = 
       first_stage_se = NA_real_,
       first_stage_t = NA_real_,
       first_stage_f = NA_real_,
-      first_stage_r2 = summary(fit)$r.squared
+      first_stage_f_proxy = NA_real_,
+      first_stage_f_method = "missing",
+      first_stage_f_eff = NA_real_,
+      first_stage_f_eff_method = "missing",
+      underid_pvalue = NA_real_,
+      underid_pvalue_method = "missing_instruments",
+      first_stage_r2 = fs_r2,
+      partial_r2 = NA_real_,
+      treatment_hat = fitted_vals
     ))
   }
 
@@ -458,23 +488,152 @@ iv_first_stage_diag <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = 
     fs_beta <- suppressWarnings(as.numeric(tab[z_terms[[1L]], 1L]))
     fs_se <- suppressWarnings(as.numeric(tab[z_terms[[1L]], 2L]))
     fs_t <- if (is.finite(fs_beta) && is.finite(fs_se) && fs_se > 0) fs_beta / fs_se else NA_real_
-    fs_f <- if (is.finite(fs_t)) fs_t^2 else NA_real_
+    fs_f_proxy <- if (is.finite(fs_t)) fs_t^2 else NA_real_
+    fs_f_method <- "hac_t2_singlez"
+    fs_f_eff <- fs_f_proxy
+    fs_f_eff_method <- "singlez_t2_from_robust_t"
+    underid_pvalue <- suppressWarnings(as.numeric(tab[z_terms[[1L]], 4L]))
+    underid_pvalue_method <- if (is.finite(underid_pvalue)) "singlez_robust_pvalue" else "singlez_pvalue_unavailable"
   } else {
     t_vals <- suppressWarnings(as.numeric(tab[z_terms, 3L]))
     t_vals <- abs(t_vals[is.finite(t_vals)])
     fs_beta <- NA_real_
     fs_se <- NA_real_
     fs_t <- if (length(t_vals) == 0L) NA_real_ else max(t_vals)
-    fs_f <- if (is.finite(fs_t)) fs_t^2 else NA_real_
+    fs_f_proxy <- NA_real_
+    fs_f_method <- "failed_hac_wald"
+    fs_f_eff <- NA_real_
+    fs_f_eff_method <- "missing"
+    underid_pvalue <- NA_real_
+    underid_pvalue_method <- "failed_to_compute_underid"
+
+    beta_vec <- suppressWarnings(as.numeric(stats::coef(fit)[z_terms]))
+    vc_z <- tryCatch(as.matrix(vc[z_terms, z_terms, drop = FALSE]), error = function(e) NULL)
+    if (!is.null(vc_z) && all(dim(vc_z) == length(z_terms)) && all(is.finite(beta_vec))) {
+      stat <- tryCatch(as.numeric(t(beta_vec) %*% iv_safe_solve(vc_z) %*% beta_vec), error = function(e) NA_real_)
+      if (is.finite(stat) && length(z_terms) > 0L) {
+        fs_f_proxy <- stat / length(z_terms)
+        fs_f_method <- "hac_wald_f_proxy_multi_z"
+        fs_f_eff <- fs_f_proxy
+        fs_f_eff_method <- "multi_z_f_proxy"
+        underid_pvalue <- stats::pchisq(stat, df = length(z_terms), lower.tail = FALSE)
+        underid_pvalue_method <- "multi_z_robust_wald_chi2"
+      } else {
+        underid_pvalue_method <- "multi_z_underid_stat_not_finite"
+      }
+    } else {
+      underid_pvalue_method <- "multi_z_underid_wald_failed"
+    }
+  }
+
+  if (length(w_safe) > 0L) {
+    reduced_formula <- stats::as.formula(paste("D ~", paste(w_safe, collapse = " + ")))
+    reduced_fit <- tryCatch(stats::lm(reduced_formula, data = dat), error = function(e) NULL)
+    sse_reduced <- if (is.null(reduced_fit)) NA_real_ else suppressWarnings(as.numeric(sum(residuals(reduced_fit)^2)))
+  } else {
+    centered <- dat$D - mean(dat$D, na.rm = TRUE)
+    sse_reduced <- suppressWarnings(as.numeric(sum(centered^2)))
+  }
+  sse_full <- suppressWarnings(as.numeric(sum(residuals(fit)^2)))
+  partial_r2 <- if (is.finite(sse_reduced) && sse_reduced > 0 && is.finite(sse_full)) (sse_reduced - sse_full) / sse_reduced else NA_real_
+  if (is.finite(partial_r2)) partial_r2 <- min(1, max(0, partial_r2))
+
+  iv_compute_mop_first_stage_f <- function(y_vec_inner, z_vec_inner, w_vec_inner = NULL, max_lags = 4L) {
+    y_work <- as.numeric(y_vec_inner)
+    z_work <- as.matrix(z_vec_inner)
+    if (length(y_work) == 0L || length(z_work) == 0L) stop("No values in effective-F inputs")
+    if (!is.matrix(z_work) || nrow(z_work) != length(y_work)) stop("Invalid moments for effective-F")
+    n <- length(y_work)
+    q_count <- ncol(z_work)
+    if (n < 4L || q_count == 0L || n <= q_count) stop("Insufficient observations for effective-F")
+    if (any(!is.finite(y_work)) || any(!is.finite(z_work))) stop("Non-finite effective-F inputs")
+
+    y_res <- y_work
+    z_res <- z_work
+    if (!is.null(w_vec_inner) && length(w_vec_inner) > 0L) {
+      w_mat <- as.matrix(w_vec_inner)
+      if (!is.matrix(w_mat) || nrow(w_mat) != n) stop("Invalid controls for effective-F residualization")
+      w_const <- cbind(`(Intercept)` = 1, w_mat)
+      if (any(!is.finite(w_const))) stop("Non-finite controls for effective-F residualization")
+      scale <- apply(w_const, 2L, stats::sd, na.rm = TRUE)
+      scale[!is.finite(scale) | scale <= 0] <- 1
+      scale <- pmax(scale, 1e-6)
+      w_scaled <- sweep(w_const, 2L, scale, "/")
+      cond_num <- tryCatch(kappa(w_scaled), error = function(e) Inf)
+      if (!is.finite(cond_num) || cond_num > 1e8) stop("Ill-conditioned controls for effective-F residualization")
+      coef_y <- suppressWarnings(iv_safe_solve(crossprod(w_scaled), crossprod(w_scaled, y_res)))
+      coef_z <- suppressWarnings(iv_safe_solve(crossprod(w_scaled), crossprod(w_scaled, z_res)))
+      if (any(!is.finite(coef_y)) || any(!is.finite(coef_z))) stop("Non-finite residualization coefficients for effective-F")
+      if (max(abs(coef_y), na.rm = TRUE) > 1e6 || max(abs(coef_z), na.rm = TRUE) > 1e6) stop("Unstable residualization coefficients for effective-F")
+      y_res <- y_res - as.numeric(w_scaled %*% coef_y)
+      z_res <- z_res - (w_scaled %*% coef_z)
+    }
+
+    q_mat <- crossprod(z_res) / n
+    cond_q <- tryCatch(kappa(q_mat), error = function(e) Inf)
+    if (!is.finite(cond_q) || cond_q > 1e14) stop("Ill-conditioned Q matrix")
+    pi_hat <- suppressWarnings(iv_safe_solve(crossprod(z_res), crossprod(z_res, y_res)))
+    if (any(!is.finite(pi_hat))) stop("Non-finite effective-F coefficients")
+    resid <- as.numeric(y_res - z_res %*% pi_hat)
+    moments <- z_res * resid
+    if (any(!is.finite(moments))) stop("Non-finite moments for effective-F")
+    omega <- iv_hac_covariance(moments, max_lags = max_lags)
+    if (!all(dim(omega) == c(q_count, q_count)) || any(!is.finite(omega))) stop("Invalid HAC covariance")
+    cond_omega <- tryCatch(kappa(omega), error = function(e) Inf)
+    if (!is.finite(cond_omega) || cond_omega > 1e16) stop("Ill-conditioned HAC covariance")
+    omega_inv <- iv_safe_solve(omega)
+    stat <- as.numeric(t(pi_hat) %*% (q_mat %*% (omega_inv %*% (q_mat %*% pi_hat))))
+    if (!is.finite(stat) || stat <= 0) stop("Non-positive robust moments statistic")
+    f_eff <- (n * stat) / q_count
+    if (!is.finite(f_eff) || f_eff <= 0) stop("Non-finite effective-F")
+    list(
+      first_stage_f_eff = f_eff,
+      underid_pvalue = stats::pchisq(n * stat, df = q_count, lower.tail = FALSE),
+      underid_pvalue_method = "first_stage_f_underid_mop_hac_chi2"
+    )
+  }
+
+  mop_label <- if (length(z_terms) == 1L) "first_stage_f_eff_mop_hac_single" else "first_stage_f_eff_mop_hac_multi"
+  z_work <- as.matrix(dat[, z_terms, drop = FALSE])
+  w_work <- if (length(w_safe) > 0L) as.matrix(dat[, w_safe, drop = FALSE]) else NULL
+  mop_out <- tryCatch(
+    iv_compute_mop_first_stage_f(dat$D, z_work, w_work, max_lags = hac_lags),
+    error = function(e) NULL
+  )
+  if (!is.null(mop_out) && is.finite(mop_out$first_stage_f_eff) && mop_out$first_stage_f_eff > 0) {
+    fs_f_eff <- as.numeric(mop_out$first_stage_f_eff)
+    fs_f_eff_method <- mop_label
+    underid_pvalue <- as.numeric(mop_out$underid_pvalue)
+    underid_pvalue_method <- as.character(mop_out$underid_pvalue_method)
+  } else {
+    fs_f_eff <- fs_f_proxy
+    fs_f_eff_method <- paste0(mop_label, "_fallback_to_", fs_f_method)
+    if (!is.finite(fs_f_eff)) {
+      fs_f_eff_method <- paste0(fs_f_eff_method, "_missing_proxy")
+      underid_pvalue <- NA_real_
+      underid_pvalue_method <- "first_stage_underid_fallback_proxy_unavailable"
+    }
   }
 
   list(
     first_stage_beta = fs_beta,
     first_stage_se = fs_se,
     first_stage_t = fs_t,
-    first_stage_f = fs_f,
-    first_stage_r2 = summary(fit)$r.squared
+    first_stage_f = fs_f_eff,
+    first_stage_f_proxy = fs_f_proxy,
+    first_stage_f_method = fs_f_method,
+    first_stage_f_eff = fs_f_eff,
+    first_stage_f_eff_method = fs_f_eff_method,
+    underid_pvalue = underid_pvalue,
+    underid_pvalue_method = underid_pvalue_method,
+    first_stage_r2 = fs_r2,
+    partial_r2 = partial_r2,
+    treatment_hat = fitted_vals
   )
+}
+
+iv_first_stage_diag <- function(d, z_frame, w_frame, hac_lags = 4L, include_w = TRUE) {
+  iv_first_stage_strength(d = d, z_frame = z_frame, w_frame = w_frame, hac_lags = hac_lags, include_w = include_w)
 }
 
 iv_fit_2sls <- function(y, d, w_frame, z_frame, hac_lags = 4L, include_w = TRUE) {
@@ -557,8 +716,15 @@ iv_fit_2sls <- function(y, d, w_frame, z_frame, hac_lags = 4L, include_w = TRUE)
     ci_high = ci_high,
     n = n_obs,
     first_stage_f = fs_diag$first_stage_f,
+    first_stage_f_proxy = fs_diag$first_stage_f_proxy,
+    first_stage_f_method = fs_diag$first_stage_f_method,
+    first_stage_f_eff = fs_diag$first_stage_f_eff,
+    first_stage_f_eff_method = fs_diag$first_stage_f_eff_method,
     first_stage_t = fs_diag$first_stage_t,
     first_stage_r2 = fs_diag$first_stage_r2,
+    underid_pvalue = fs_diag$underid_pvalue,
+    underid_pvalue_method = fs_diag$underid_pvalue_method,
+    partial_r2 = fs_diag$partial_r2,
     inference_method = "iv_wald_hac"
   )
 }
@@ -626,8 +792,15 @@ iv_fit_dml <- function(y, d, w_frame, z_frame, hac_lags = 4L, folds = 5L) {
     ci_high = beta + 1.96 * se_out$se,
     n = nrow(dat),
     first_stage_f = fs_diag$first_stage_f,
+    first_stage_f_proxy = fs_diag$first_stage_f_proxy,
+    first_stage_f_method = fs_diag$first_stage_f_method,
+    first_stage_f_eff = fs_diag$first_stage_f_eff,
+    first_stage_f_eff_method = fs_diag$first_stage_f_eff_method,
     first_stage_t = fs_diag$first_stage_t,
     first_stage_r2 = fs_diag$first_stage_r2,
+    underid_pvalue = fs_diag$underid_pvalue,
+    underid_pvalue_method = fs_diag$underid_pvalue_method,
+    partial_r2 = fs_diag$partial_r2,
     inference_method = "orthogonal_hac",
     folds = max(2L, min(as.integer(folds), nrow(dat)))
   )
