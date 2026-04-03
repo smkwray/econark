@@ -61,6 +61,47 @@ run_test("Rolling output includes required metadata columns", function() {
   .assert(all(nzchar(as.character(df$coint_method))), "coint_method should be non-empty")
 })
 
+run_test("Rolling engine emits fitted-model stats and uses exogenous controls", function() {
+  set.seed(7)
+  n <- 120L
+  dates <- seq(as.Date("2000-01-31"), by = "month", length.out = n)
+  trend <- cumsum(stats::rnorm(n, mean = 0.2, sd = 1))
+  level <- data.frame(
+    date = dates,
+    target = trend + stats::rnorm(n, sd = 0.3),
+    cand_a = trend + stats::rnorm(n, sd = 0.3),
+    exog = sin(seq_len(n) / 8) + stats::rnorm(n, sd = 0.1),
+    stringsAsFactors = FALSE
+  )
+  stat <- level
+  stat$target <- c(0, diff(level$target))
+  stat$cand_a <- c(0, diff(level$cand_a))
+  stat$exog <- c(0, diff(level$exog))
+
+  cfg <- list(
+    USE_PCA_FOR_EXOG = FALSE,
+    MAX_PCA_COMPONENTS = 5L,
+    PCA_EXPLAINED_VAR_THRESHOLD = 0.85
+  )
+  df <- coflow_run_pair(
+    level_df = level,
+    stat_df = stat,
+    target = "target",
+    candidate = "cand_a",
+    candidate_columns = c("cand_a"),
+    window_size = 36L,
+    min_obs = 24L,
+    exog_df = data.frame(date = dates, exog = stat$exog, stringsAsFactors = FALSE),
+    cfg = cfg
+  )
+
+  .assert(nrow(df) > 0L, "expected modelled rolling rows with exogenous controls")
+  .assert(all(df$model_stats_proxy == FALSE), "rolling stats should come from fitted regime models")
+  .assert(all(df$exog_controls_used == TRUE), "exogenous controls should be threaded into rolling fits")
+  .assert(all(df$residual_corr_source %in% c("vecm_residuals", "var_residuals")), "unexpected residual correlation source")
+  .assert(any(df$model_type %in% c("VECM", "VAR")), "expected fitted model type labels")
+})
+
 run_test("Rolling writer enforces metadata contract", function() {
   cfg <- list(RESULTS_DIR = tempfile("coflow_rw_contract_"), CONFIG_SLUG = "unit_contract")
   dir.create(cfg$RESULTS_DIR, recursive = TRUE, showWarnings = FALSE)

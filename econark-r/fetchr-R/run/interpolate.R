@@ -494,6 +494,144 @@ quarterly_to_monthly_dfm_clean <- function(series_df, conversion = "sum", low_ag
   list(series = data.frame(date = high_dates, value = vals, stringsAsFactors = FALSE), reason = NULL)
 }
 
+.indicator_mean_signal <- function(x_high) {
+  if (is.null(x_high)) return(numeric(0))
+  x <- as.matrix(x_high)
+  if (ncol(x) == 0L) return(numeric(0))
+  if (ncol(x) == 1L) return(as.numeric(x[, 1L]))
+  rowMeans(x, na.rm = TRUE)
+}
+
+.normalize_covariance <- function(cov) {
+  diag_vals <- diag(cov)
+  finite <- diag_vals[is.finite(diag_vals) & diag_vals > 0]
+  if (length(finite) == 0L) return(cov)
+  scale <- stats::median(finite)
+  if (!is.finite(scale) || scale <= 0) return(cov)
+  cov / scale
+}
+
+.stabilize_covariance <- function(cov, eps = 1e-8, max_abs = 1e6) {
+  out <- as.matrix(cov)
+  out[!is.finite(out)] <- 0
+  out <- 0.5 * (out + t(out))
+  if (length(out) == 0L) return(out)
+
+  diag_vals <- diag(out)
+  finite <- diag_vals[is.finite(diag_vals) & diag_vals > 0]
+  diag_floor <- if (length(finite) > 0L) stats::median(finite) * eps else eps
+  diag(out) <- pmax(diag(out), diag_floor)
+
+  mag <- suppressWarnings(max(abs(out), na.rm = TRUE))
+  if (is.finite(mag) && mag > max_abs) {
+    out <- out * (max_abs / mag)
+    diag(out) <- pmax(diag(out), diag_floor)
+  }
+  out
+}
+
+.safe_matmul <- function(left, right) {
+  out <- as.matrix(left) %*% as.matrix(right)
+  out[!is.finite(out)] <- 0
+  out
+}
+
+.solve_linear_system <- function(a, b) {
+  tryCatch(solve(a, b), error = function(e) qr.solve(a, b))
+}
+
+.covariance_high_ar1 <- function(n, rho) {
+  idx <- seq_len(n) - 1L
+  cov <- outer(idx, idx, function(i, j) rho ^ abs(i - j))
+  .stabilize_covariance(.normalize_covariance(cov))
+}
+
+.covariance_high_rw_ar1 <- function(n, rho) {
+  i <- matrix(seq_len(n) - 1L, nrow = n, ncol = n)
+  j <- t(i)
+  lag <- i - j
+  weights <- matrix(0, nrow = n, ncol = n)
+  mask <- lag >= 0
+  if (abs(1 - rho) < 1e-10) {
+    weights[mask] <- lag[mask] + 1
+  } else {
+    weights[mask] <- (1 - rho ^ (lag[mask] + 1)) / (1 - rho)
+  }
+  cov <- .safe_matmul(weights, t(weights))
+  .stabilize_covariance(.normalize_covariance(cov))
+}
+
+.design_matrices_gls <- function(a, x_high, factor, conversion, include_intercept = TRUE) {
+  cols <- list()
+  if (isTRUE(include_intercept)) {
+    if (conversion %in% c("sum", "mean")) {
+      cols[[length(cols) + 1L]] <- matrix(rep(1 / factor, ncol(a)), ncol = 1L)
+    } else {
+      cols[[length(cols) + 1L]] <- matrix(rep(1, ncol(a)), ncol = 1L)
+    }
+  }
+  cols[[length(cols) + 1L]] <- as.matrix(x_high)
+  w <- do.call(cbind, cols)
+  z <- .safe_matmul(a, w)
+  list(w = w, z = z)
+}
+
+.fit_gls_beta <- function(y, z, omega_low, ridge = 1e-8) {
+  inv_oz <- .solve_linear_system(omega_low, z)
+  normal <- .safe_matmul(t(z), inv_oz) + ridge * diag(ncol(z))
+  rhs <- .safe_matmul(t(z), .solve_linear_system(omega_low, y))
+  .solve_linear_system(normal, rhs)
+}
+
+.gls_reconcile <- function(y, a, w, cov_high, ridge = 1e-8) {
+  cov_h <- .stabilize_covariance(cov_high) + ridge * diag(nrow(cov_high))
+  cov_l <- .safe_matmul(.safe_matmul(a, cov_h), t(a)) + ridge * diag(nrow(a))
+  cov_l <- .stabilize_covariance(cov_l)
+  z <- .safe_matmul(a, w)
+  beta <- .fit_gls_beta(y = y, z = z, omega_low = cov_l, ridge = ridge)
+  prior <- .safe_matmul(w, beta)
+  resid <- y - .safe_matmul(a, prior)
+  adjustment <- .safe_matmul(.safe_matmul(cov_h, t(a)), .solve_linear_system(cov_l, resid))
+  list(high = as.numeric(prior + adjustment), beta = as.numeric(beta))
+}
+
+.score_rho <- function(y, z, a, cov_high, ridge = 1e-8) {
+  cov_l <- .safe_matmul(.safe_matmul(a, .stabilize_covariance(cov_high)), t(a)) + ridge * diag(nrow(a))
+  cov_l <- .stabilize_covariance(cov_l)
+  beta <- .fit_gls_beta(y = y, z = z, omega_low = cov_l, ridge = ridge)
+  resid <- y - .safe_matmul(z, beta)
+  solved <- .solve_linear_system(cov_l, resid)
+  quad <- as.numeric(t(resid) %*% solved)
+  quad <- max(quad, 1e-12)
+  sigma2 <- quad / length(y)
+  det_info <- determinant(cov_l, logarithm = TRUE)
+  sign_val <- as.numeric(det_info$sign)
+  logdet <- as.numeric(det_info$modulus[[1L]])
+  if (!is.finite(logdet) || sign_val <= 0) return(-Inf)
+  as.numeric(-0.5 * (logdet + length(y) * log(sigma2)))
+}
+
+.rho_grid <- function(method) {
+  if (method == "chow_lin") return(seq(-0.9, 0.95, length.out = 38L))
+  if (method == "litterman") return(seq(0, 0.98, length.out = 40L))
+  0
+}
+
+.choose_rho <- function(method, y, z, a, ridge = 1e-8) {
+  if (length(y) < 6L) return(ifelse(method == "chow_lin", 0.5, 0.7))
+  cov_builder <- if (identical(method, "chow_lin")) .covariance_high_ar1 else .covariance_high_rw_ar1
+  best_rho <- 0
+  best_score <- -Inf
+  for (rho in .rho_grid(method)) {
+    score <- .score_rho(y = y, z = z, a = a, cov_high = cov_builder(ncol(a), rho), ridge = ridge)
+    if (is.finite(score) && score > best_score) {
+      best_score <- score
+      best_rho <- rho
+    }
+  }
+  as.numeric(best_rho)
+}
+
 .indicator_bridge_disaggregate <- function(low_df, high_dates, indicator_values, factor, conversion = "sum", positive = FALSE, include_intercept = TRUE) {
   low <- normalize_series_df(low_df)
   if (length(indicator_values) != nrow(low) * factor) {
@@ -566,11 +704,13 @@ quarterly_to_monthly_dfm_clean <- function(series_df, conversion = "sum", low_ag
   if (!requested %in% valid_methods) stop(sprintf("Unsupported disagg_method: %s", requested))
 
   ind_meta <- .load_indicator_matrix(task, context = context, high_freq = high_freq, high_dates = high_dates, conversion = conversion)
-  indicator_vec <- if (!is.null(ind_meta$matrix)) as.numeric(ind_meta$matrix[, 1L]) else NULL
+  indicator_mat <- ind_meta$matrix
+  indicator_vec <- if (!is.null(indicator_mat)) .indicator_mean_signal(indicator_mat) else NULL
 
   method_used <- requested
   fallback_reason <- NULL
   auto_reason <- ""
+  rho_val <- NA_real_
   if (requested == "auto") {
     if (!is.null(indicator_vec)) {
       method_used <- "denton_proportional"
@@ -625,17 +765,39 @@ quarterly_to_monthly_dfm_clean <- function(series_df, conversion = "sum", low_ag
       stop(sprintf("disagg_method '%s' requires at least one indicator series", method_used))
     }
     include_intercept <- .as_flag(task$disagg_include_intercept, default = TRUE)
-    bridge <- .indicator_bridge_disaggregate(
-      low,
-      high_dates = high_dates,
-      indicator_values = indicator_vec,
+    a <- .build_constraint_matrix(n_low = nrow(low), factor = factor, conversion = conversion)
+    design <- .design_matrices_gls(
+      a = a,
+      x_high = indicator_mat,
       factor = factor,
       conversion = conversion,
-      positive = positive,
       include_intercept = include_intercept
     )
-    if (is.null(bridge$series)) {
-      fallback_reason <- paste0(method_used, "_fallback_", bridge$reason)
+    rho_raw <- ifelse(is.null(task$rho), "auto", as.character(task$rho))
+    ridge <- ifelse(is.null(task$gls_ridge), 1e-8, as.numeric(task$gls_ridge))
+    targets <- as.numeric(if (conversion == "mean") low$value * factor else low$value)
+
+    if (method_used == "fernandez") {
+      rho_val <- 0
+      cov_high <- .covariance_high_rw_ar1(length(high_dates), rho_val)
+    } else if (method_used == "chow_lin") {
+      rho_val <- if (tolower(trimws(rho_raw)) == "auto") .choose_rho("chow_lin", y = targets, z = design$z, a = a, ridge = ridge) else suppressWarnings(as.numeric(rho_raw))
+      if (!is.finite(rho_val)) rho_val <- 0.5
+      rho_val <- max(-0.99, min(0.99, rho_val))
+      cov_high <- .covariance_high_ar1(length(high_dates), rho_val)
+    } else {
+      rho_val <- if (tolower(trimws(rho_raw)) == "auto") .choose_rho("litterman", y = targets, z = design$z, a = a, ridge = ridge) else suppressWarnings(as.numeric(rho_raw))
+      if (!is.finite(rho_val)) rho_val <- 0.7
+      rho_val <- max(0, min(0.999, rho_val))
+      cov_high <- .covariance_high_rw_ar1(length(high_dates), rho_val)
+    }
+
+    gls <- tryCatch(
+      .gls_reconcile(y = targets, a = a, w = design$w, cov_high = cov_high, ridge = ridge),
+      error = function(e) NULL
+    )
+    if (is.null(gls) || any(!is.finite(gls$high))) {
+      fallback_reason <- paste0(method_used, "_fallback_gls_fit_failed")
       out <- denton_disaggregate(
         low,
         high_freq = high_freq,
@@ -646,15 +808,17 @@ quarterly_to_monthly_dfm_clean <- function(series_df, conversion = "sum", low_ag
       )
       method_used <- "denton"
     } else {
-      out <- bridge$series
+      vals <- as.numeric(gls$high)
+      if (positive) {
+        vals <- pmax(vals, 0)
+        for (j in seq_len(nrow(low))) {
+          lo <- (j - 1L) * factor + 1L
+          hi <- lo + factor - 1L
+          vals[lo:hi] <- .benchmark_block(vals[lo:hi], target = low$value[[j]], conversion = conversion)
+        }
+      }
+      out <- data.frame(date = high_dates, value = vals, stringsAsFactors = FALSE)
     }
-  }
-
-  rho_val <- NA_real_
-  if (method_used %in% c("chow_lin", "litterman")) {
-    rho_raw <- ifelse(is.null(task$rho), "auto", as.character(task$rho))
-    rho_val <- if (tolower(trimws(rho_raw)) == "auto") 0.8 else suppressWarnings(as.numeric(rho_raw))
-    if (!is.finite(rho_val)) rho_val <- 0.8
   }
 
   disagg_include_intercept <- if (is.null(task$disagg_include_intercept)) NULL else .as_flag(task$disagg_include_intercept, default = TRUE)
@@ -663,6 +827,8 @@ quarterly_to_monthly_dfm_clean <- function(series_df, conversion = "sum", low_ag
     disagg_method = requested,
     disagg_method_used = method_used,
     disagg_method_fallback_reason = fallback_reason,
+    disagg_engine = if (method_used %in% c("fernandez", "chow_lin", "litterman")) "native_gls" else "native_route",
+    disagg_method_note = if (method_used %in% c("fernandez", "chow_lin", "litterman")) "Method-specific GLS covariance route." else "",
     low_frequency = low_freq,
     high_frequency = high_freq,
     factor = as.integer(factor),
@@ -676,6 +842,106 @@ quarterly_to_monthly_dfm_clean <- function(series_df, conversion = "sum", low_ag
   )
 
   list(series = normalize_series_df(out), metadata = extra)
+}
+
+.dfm_choose_k_factors <- function(x, task) {
+  k_raw <- ifelse(is.null(task$dfm_k_factors), "auto", task$dfm_k_factors)
+  if (!is.character(k_raw) || tolower(trimws(as.character(k_raw))) != "auto") {
+    k <- suppressWarnings(as.integer(k_raw))
+    if (is.finite(k) && k >= 1L) return(min(k, ncol(x)))
+  }
+
+  pc <- stats::prcomp(x, center = FALSE, scale. = FALSE)
+  var_share <- (pc$sdev ^ 2) / sum(pc$sdev ^ 2)
+  thresh <- ifelse(is.null(task$dfm_pca_corr_threshold), 0.85, suppressWarnings(as.numeric(task$dfm_pca_corr_threshold)))
+  if (!is.finite(thresh) || thresh <= 0 || thresh > 1) thresh <- 0.85
+  max_k <- min(ifelse(is.null(task$dfm_k_max), min(6L, ncol(x)), as.integer(task$dfm_k_max)), ncol(x))
+  k <- which(cumsum(var_share) >= thresh)[1L]
+  if (!is.finite(k)) k <- max_k
+  max(1L, min(max_k, as.integer(k)))
+}
+
+.dfm_companion_matrices <- function(scores, factor_order) {
+  k_factors <- ncol(scores)
+  order <- max(1L, as.integer(factor_order))
+  m <- k_factors * order
+  Tmat <- matrix(0, nrow = m, ncol = m)
+  Rmat <- matrix(0, nrow = m, ncol = k_factors)
+  q_diag <- rep(0.05, k_factors)
+
+  for (f in seq_len(k_factors)) {
+    idx <- ((f - 1L) * order + 1L):(f * order)
+    score <- as.numeric(scores[, f])
+    phi <- rep(0, order)
+    fit <- tryCatch(stats::ar(score, aic = FALSE, order.max = order, demean = FALSE, method = "ols"), error = function(e) NULL)
+    if (!is.null(fit) && length(fit$ar) > 0L) {
+      phi[seq_along(fit$ar)] <- fit$ar
+      q_diag[[f]] <- max(1e-4, suppressWarnings(as.numeric(fit$var.pred)))
+    } else {
+      q_diag[[f]] <- max(1e-4, stats::var(score, na.rm = TRUE) * 0.1)
+    }
+
+    Tmat[idx[[1L]], idx] <- phi
+    if (order > 1L) {
+      for (j in 2:order) Tmat[idx[[j]], idx[[j - 1L]]] <- 1
+    }
+    Rmat[idx[[1L]], f] <- 1
+  }
+
+  list(T = Tmat, R = Rmat, Q = diag(q_diag, nrow = k_factors))
+}
+
+.dfm_extract_monthly_factors <- function(x_scaled, task) {
+  if (!requireNamespace("KFAS", quietly = TRUE)) {
+    stop("quarterly_to_monthly_dfm_state_space requires the KFAS package")
+  }
+  SSMcustom <- KFAS::SSMcustom
+  SSModel <- KFAS::SSModel
+
+  pc <- stats::prcomp(x_scaled, center = FALSE, scale. = FALSE)
+  k_factors <- .dfm_choose_k_factors(x_scaled, task)
+  factor_order <- max(1L, ifelse(is.null(task$dfm_factor_order), 1L, as.integer(task$dfm_factor_order)))
+
+  loadings <- pc$rotation[, seq_len(k_factors), drop = FALSE]
+  scores <- pc$x[, seq_len(k_factors), drop = FALSE]
+  dyn <- .dfm_companion_matrices(scores, factor_order = factor_order)
+
+  m <- k_factors * factor_order
+  Z <- matrix(0, nrow = ncol(x_scaled), ncol = m)
+  first_state_idx <- seq(1L, m, by = factor_order)
+  Z[, first_state_idx] <- loadings
+
+  recon <- scores %*% t(loadings)
+  h_diag <- apply(x_scaled - recon, 2L, function(col) {
+    vv <- stats::var(col, na.rm = TRUE)
+    if (!is.finite(vv) || vv <= 1e-6) 1e-4 else vv
+  })
+  H <- diag(h_diag, nrow = ncol(x_scaled))
+
+  model <- SSModel(
+    as.matrix(x_scaled) ~ -1 + SSMcustom(
+      Z = Z,
+      T = dyn$T,
+      R = dyn$R,
+      Q = dyn$Q,
+      a1 = matrix(0, nrow = m, ncol = 1L),
+      P1 = diag(0, nrow = m),
+      P1inf = diag(1, nrow = m),
+      n = nrow(x_scaled)
+    ),
+    H = H
+  )
+  smoothed <- KFAS::KFS(model, smoothing = "state")
+  factor_states <- as.data.frame(smoothed$alphahat[, first_state_idx, drop = FALSE], stringsAsFactors = FALSE)
+  names(factor_states) <- sprintf("factor_%02d", seq_len(ncol(factor_states)))
+
+  list(
+    factors = factor_states,
+    k_factors = as.integer(k_factors),
+    factor_order = as.integer(factor_order),
+    loadings = loadings,
+    loglik = suppressWarnings(as.numeric(stats::logLik(model)))
+  )
 }
 
 quarterly_to_monthly_dfm_state_space <- function(task, series_df, conversion = "sum", low_agg = "last", positive = FALSE, context = list()) {
@@ -694,33 +960,39 @@ quarterly_to_monthly_dfm_state_space <- function(task, series_df, conversion = "
     meta <- list(
       method_fallback_reason = fallback_reason,
       indicator_count = 0L,
-      indicator_coverage = 0
+      indicator_coverage = 0,
+      model_family = "indicator_bridge_compatibility",
+      model_note = "Compatibility route falls back to quarterly_to_monthly_dfm_clean when indicators are unavailable."
     )
     return(list(series = normalize_series_df(out), metadata = meta))
   }
 
   x_high <- ind_meta$matrix
+  x_high <- as.matrix(x_high)
+  x_high[!is.finite(x_high)] <- 0
+  x_center <- scale(x_high, center = TRUE, scale = TRUE)
+  x_center[!is.finite(x_center)] <- 0
+
+  dfm_fit <- .dfm_extract_monthly_factors(x_center, task = task)
+  factor_monthly <- dfm_fit$factors
   n_low <- nrow(low)
-  x_low <- matrix(NA_real_, nrow = n_low, ncol = ncol(x_high))
+  factor_q <- matrix(NA_real_, nrow = n_low, ncol = ncol(factor_monthly))
   for (i in seq_len(n_low)) {
     lo <- (i - 1L) * factor + 1L
     hi <- lo + factor - 1L
-    x_low[i, ] <- colMeans(x_high[lo:hi, , drop = FALSE], na.rm = TRUE)
+    factor_q[i, ] <- colMeans(factor_monthly[lo:hi, , drop = FALSE], na.rm = TRUE)
   }
-  x_low[!is.finite(x_low)] <- 0
+  factor_q[!is.finite(factor_q)] <- 0
 
-  fit_df <- data.frame(y = low$value, x_low)
-  colnames(fit_df) <- c("y", sprintf("x_%02d", seq_len(ncol(x_low))))
-  model_terms <- colnames(fit_df)[-1L]
+  fit_df <- data.frame(y = low$value, factor_q, stringsAsFactors = FALSE)
+  colnames(fit_df) <- c("y", names(factor_monthly))
+  model_terms <- names(factor_monthly)
   form <- stats::as.formula(paste("y ~", paste(model_terms, collapse = " + ")))
 
   fit <- tryCatch(stats::lm(form, data = fit_df), error = function(e) NULL)
-  if (is.null(fit)) {
-    fit <- stats::lm(y ~ 1, data = fit_df)
-  }
+  if (is.null(fit)) fit <- stats::lm(y ~ 1, data = fit_df)
 
-  new_df <- as.data.frame(x_high)
-  colnames(new_df) <- model_terms
+  new_df <- factor_monthly
   pred <- as.numeric(stats::predict(fit, newdata = new_df))
   if (!all(is.finite(pred))) {
     repl <- if (any(is.finite(pred))) stats::median(pred[is.finite(pred)]) else stats::mean(low$value)
@@ -741,6 +1013,7 @@ quarterly_to_monthly_dfm_state_space <- function(task, series_df, conversion = "
     artifact_dir <- as.character(context$task_artifact_dir)
     dir.create(artifact_dir, recursive = TRUE, showWarnings = FALSE)
     write_series_csv(file.path(artifact_dir, "monthly_estimate_levels.csv"), out)
+    utils::write.csv(data.frame(date = high_dates, factor_monthly, stringsAsFactors = FALSE), file.path(artifact_dir, "factors_monthly.csv"), row.names = FALSE)
   }
 
   bootstrap_enabled <- .as_flag(task$bootstrap_enabled, default = FALSE)
@@ -817,14 +1090,17 @@ quarterly_to_monthly_dfm_state_space <- function(task, series_df, conversion = "
   }
 
   meta <- list(
+    model_family = "state_space_dfm",
+    model_note = "Latent-factor state-space model with PCA-initialized loadings and Kalman smoothing via KFAS.",
     indicator_count = as.integer(ind_meta$indicator_count),
     indicator_coverage = as.numeric(ind_meta$indicator_coverage),
     indicator_fill = as.character(ind_meta$indicator_fill),
     indicator_high_agg = as.character(ind_meta$indicator_high_agg),
-    k_factors = as.integer(ifelse(is.null(task$dfm_k_factors), ncol(x_high), suppressWarnings(as.numeric(task$dfm_k_factors)))),
-    factor_order = as.integer(ifelse(is.null(task$dfm_factor_order), 1L, task$dfm_factor_order)),
+    k_factors = as.integer(dfm_fit$k_factors),
+    factor_order = as.integer(dfm_fit$factor_order),
     indicator_preprocess_mode = as.character(ifelse(is.null(task$dfm_indicator_preprocess_mode), "none", task$dfm_indicator_preprocess_mode)),
-    indicator_preprocess_output_cols = as.integer(ncol(x_high)),
+    indicator_preprocess_output_cols = as.integer(ncol(factor_monthly)),
+    dfm_loglik = as.numeric(dfm_fit$loglik),
     bootstrap_method = bootstrap_method,
     bootstrap_success = as.integer(bootstrap_success),
     bootstrap_fail = as.integer(bootstrap_fail),

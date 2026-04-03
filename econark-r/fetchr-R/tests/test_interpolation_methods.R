@@ -91,11 +91,50 @@ run_test("DFM state-space route emits bootstrap metadata/artifacts", function() 
   meta <- res$metadata
 
   .assert(meta$method == "quarterly_to_monthly_dfm_state_space", "DFM method mismatch")
+  .assert(meta$model_family == "state_space_dfm", "DFM route should report state-space model family")
   .assert(as.integer(meta$indicator_count) >= 1L, "DFM indicator metadata missing")
   .assert(as.integer(meta$bootstrap_success) > 0L, "DFM bootstrap did not produce successful draws")
   .assert(file.exists(file.path(artifact_dir, "monthly_estimate_levels.csv")), "DFM artifact monthly_estimate_levels.csv missing")
+  .assert(file.exists(file.path(artifact_dir, "factors_monthly.csv")), "DFM artifact factors_monthly.csv missing")
   .assert(file.exists(file.path(artifact_dir, "bootstrap_quantiles.csv")), "DFM artifact bootstrap_quantiles.csv missing")
   .assert(nrow(res$series) > 0L, "DFM output is empty")
+})
+
+run_test("Named temporal disaggregation methods run distinct GLS routes", function() {
+  annual_csv <- file.path(fetchr_root, "examples", "data", "gdp_annual.csv")
+  quarterly_csv <- file.path(fetchr_root, "examples", "data", "gdp_quarterly.csv")
+  input <- read_series_from_table(annual_csv, name = "gdp_annual")
+
+  run_case <- function(disagg_method) {
+    run_interpolation_task(
+      list(
+        name = paste0("gls_", disagg_method),
+        method = "annual_to_monthly_temporal_disagg",
+        conversion = "sum",
+        disagg_method = disagg_method,
+        indicators = list(
+          list(
+            input_path = quarterly_csv,
+            date_col = "date",
+            value_col = "value",
+            conversion = "mean"
+          )
+        )
+      ),
+      input,
+      context = list(series_loader = .loader)
+    )
+  }
+
+  chow <- run_case("chow_lin")
+  litt <- run_case("litterman")
+  fern <- run_case("fernandez")
+
+  .assert(chow$metadata$disagg_engine == "native_gls", "chow_lin should use native GLS route")
+  .assert(litt$metadata$disagg_engine == "native_gls", "litterman should use native GLS route")
+  .assert(fern$metadata$disagg_engine == "native_gls", "fernandez should use native GLS route")
+  .assert(sum(abs(chow$series$value - litt$series$value)) > 1e-6, "chow_lin and litterman should not collapse to identical outputs")
+  .assert(sum(abs(chow$series$value - fern$series$value)) > 1e-6, "chow_lin and fernandez should not collapse to identical outputs")
 })
 
 run_test("Interpolation route execution labels are deterministic", function() {

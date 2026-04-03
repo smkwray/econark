@@ -128,6 +128,19 @@ run_derive <- function(cfg, fetched = list(), interpolated = list()) {
   out_map
 }
 
+.broadcast_period_levels_to_monthly <- function(series_df, source_frequency = "Q") {
+  s <- normalize_series_df(series_df)
+  if (nrow(s) == 0L) return(s)
+  sf <- toupper(trimws(as.character(source_frequency)))
+  factor <- if (sf == "Y") 12L else 3L
+  high_dates <- .build_high_dates_from_low(s, high_freq = "M", factor = factor)
+  normalize_series_df(data.frame(
+    date = high_dates,
+    value = rep(as.numeric(s$value), each = factor),
+    stringsAsFactors = FALSE
+  ))
+}
+
 .to_monthly <- function(series_df, source_frequency = NULL, low_agg = "last") {
   s <- normalize_series_df(series_df)
   if (nrow(s) == 0) return(s)
@@ -144,10 +157,17 @@ run_derive <- function(cfg, fetched = list(), interpolated = list()) {
   }
   if (sf == "Q") {
     q <- .aggregate_to_period(s, "Q", low_agg)
+    if (low_agg %in% c("first", "last")) {
+      return(.broadcast_period_levels_to_monthly(q, source_frequency = "Q"))
+    }
     out <- quarterly_to_monthly_dfm_clean(q, conversion = ifelse(low_agg == "mean", "mean", "sum"), low_agg = "last", positive = FALSE)
     return(normalize_series_df(out))
   }
   if (sf %in% c("Y", "A")) {
+    if (low_agg %in% c("first", "last")) {
+      y <- .aggregate_to_period(s, "Y", low_agg)
+      return(.broadcast_period_levels_to_monthly(y, source_frequency = "Y"))
+    }
     out <- annual_to_monthly_denton(s, conversion = ifelse(low_agg == "mean", "mean", "sum"), low_agg = "last", positive = FALSE)
     return(normalize_series_df(out))
   }

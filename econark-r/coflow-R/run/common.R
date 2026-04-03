@@ -34,6 +34,9 @@ coflow_load_config <- function(config_path) {
     TARGET_VARIABLES = as.character(unlist(get_or("TARGET_VARIABLES", character()))),
     ALL_POSSIBLE_CANDIDATES = as.character(unlist(get_or("ALL_POSSIBLE_CANDIDATES", character()))),
     EXOG_CONTROLS = as.character(unlist(get_or("EXOG_CONTROLS", character()))),
+    USE_PCA_FOR_EXOG = isTRUE(get_or("USE_PCA_FOR_EXOG", FALSE)),
+    PCA_EXPLAINED_VAR_THRESHOLD = as.numeric(get_or("PCA_EXPLAINED_VAR_THRESHOLD", 0.85)),
+    MAX_PCA_COMPONENTS = as.integer(get_or("MAX_PCA_COMPONENTS", 5L)),
     ANALYSIS_MODES_TO_RUN = as.character(unlist(get_or("ANALYSIS_MODES_TO_RUN", c("positive", "negative", "least")))),
     ROLLING_WINDOW_SIZES = as.integer(unlist(get_or("ROLLING_WINDOW_SIZES", c(120, 60)))),
     MAX_LAGS = as.integer(get_or("MAX_LAGS", 3)),
@@ -82,6 +85,10 @@ coflow_load_config <- function(config_path) {
   if (!cfg$VAR_LAG_SELECTION_CRITERION %in% c("aic", "bic", "hq", "hqic")) cfg$VAR_LAG_SELECTION_CRITERION <- "aic"
   if (!is.finite(cfg$COINT_ALPHA) || cfg$COINT_ALPHA <= 0 || cfg$COINT_ALPHA >= 1) cfg$COINT_ALPHA <- 0.05
   if (!cfg$COINT_METHOD %in% c("auto", "johansen", "engle_granger")) cfg$COINT_METHOD <- "auto"
+  if (!is.finite(cfg$PCA_EXPLAINED_VAR_THRESHOLD) || cfg$PCA_EXPLAINED_VAR_THRESHOLD <= 0 || cfg$PCA_EXPLAINED_VAR_THRESHOLD > 1) {
+    cfg$PCA_EXPLAINED_VAR_THRESHOLD <- 0.85
+  }
+  if (!is.finite(cfg$MAX_PCA_COMPONENTS) || cfg$MAX_PCA_COMPONENTS < 1L) cfg$MAX_PCA_COMPONENTS <- 5L
   if (!cfg$SCORING_PROFILE %in% c("publication_v2", "legacy", "legacy_v1", "v1", "classic")) cfg$SCORING_PROFILE <- "publication_v2"
   if (!is.finite(cfg$SCORE_WEIGHT_VAR)) cfg$SCORE_WEIGHT_VAR <- 0.7
   if (!is.finite(cfg$SCORE_WEIGHT_VECM)) cfg$SCORE_WEIGHT_VECM <- 0.3

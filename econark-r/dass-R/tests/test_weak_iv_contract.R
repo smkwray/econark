@@ -23,22 +23,32 @@ writeLines("OUT_DIR <- 'out'", con = cfg_path)
 
 set.seed(42)
 n <- 160
-w1 <- rnorm(n)
+z_decl <- rnorm(n)
+w_strong <- rnorm(n)
 w2 <- rnorm(n)
 w3 <- rnorm(n)
-d <- 0.9 * w1 + 0.25 * w2 + rnorm(n, sd = 0.6)
+d <- 0.8 * z_decl + 1.6 * w_strong + 0.25 * w2 + rnorm(n, sd = 0.6)
 y <- 1.4 * d + 0.2 * w2 + rnorm(n, sd = 0.8)
 
 design <- data.frame(
   quarter_end = as.Date("2000-01-01") + seq_len(n),
   D = d,
   Y = y,
-  m__z1__lag001 = w1,
-  m__z2__lag001 = w2,
-  m__z3__lag001 = w3
+  z_decl = z_decl,
+  w_strong = w_strong,
+  w2 = w2,
+  w3 = w3
 )
 design_csv <- file.path(tmp, "design_treat_out_h1.csv")
 utils::write.csv(design, design_csv, row.names = FALSE)
+meta_json <- file.path(tmp, "design_treat_out_h1_meta.json")
+write_json(meta_json, list(spec = list(
+  treatment = "D",
+  outcome = "Y",
+  instrument = "z_decl",
+  control_cols = c("w_strong", "w2", "w3"),
+  horizon = 1L
+)))
 
 cfg <- list(
   CONFIG_PATH = cfg_path,
@@ -64,8 +74,8 @@ set_results_provenance_context(
 )
 on.exit(clear_results_provenance_context(), add = TRUE)
 
-lp_out <- run_lp_iv(cfg, design_csv)
-dml_out <- run_dml_iv(cfg, design_csv)
+lp_out <- run_lp_iv(cfg, design_csv, meta_json = meta_json)
+dml_out <- run_dml_iv(cfg, design_csv, meta_json = meta_json)
 
 must_have <- c("weak_iv_flag", "first_stage_f", "min_first_stage_f", "clr_se", "clr_p", "clr_ci_low", "clr_ci_high")
 if (is.null(lp_out$weak_iv) || !all(must_have %in% names(lp_out$weak_iv))) {
@@ -78,6 +88,10 @@ if (is.null(dml_out$weak_iv) || !all(must_have %in% names(dml_out$weak_iv))) {
 if (!is.finite(as.numeric(lp_out$iv$first_stage_f)) || !is.finite(as.numeric(dml_out$iv$first_stage_f))) {
   stop("first_stage_f must be finite")
 }
+if (!identical(as.character(lp_out$iv$instrument), "z_decl")) stop("lp_iv did not honor declared instrument")
+if (!identical(as.character(dml_out$iv$instrument), "z_decl")) stop("dml_iv did not honor declared instrument")
+if (!identical(as.character(lp_out$inference_method), "iv_wald_hac")) stop("lp_iv did not use IV Wald HAC inference")
+if (!identical(as.character(dml_out$inference_method), "orthogonal_hac")) stop("dml_iv did not use orthogonal HAC inference")
 
 results <- utils::read.csv(cfg$RESULTS_CSV, stringsAsFactors = FALSE)
 if (!all(c("estimator", "notes", "estimate", "se", "p") %in% names(results))) {

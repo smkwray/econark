@@ -78,13 +78,26 @@ coflow_prepare_data <- function(cfg) {
     stat_df <- stat_df[keep, , drop = FALSE]
   }
 
-  requested <- unique(c(cfg$TARGET_VARIABLES, cfg$ALL_POSSIBLE_CANDIDATES, cfg$EXOG_CONTROLS))
-  available <- intersect(requested, names(level_df))
-  if (length(available) == 0) stop("No requested target/candidate columns found in panel")
+  requested_endog <- unique(c(cfg$TARGET_VARIABLES, cfg$ALL_POSSIBLE_CANDIDATES))
+  available_endog <- intersect(requested_endog, names(level_df))
+  if (length(available_endog) == 0) stop("No requested target/candidate columns found in panel")
 
-  cols <- c("date", available)
-  level_df <- level_df[, cols, drop = FALSE]
-  stat_df <- stat_df[, cols, drop = FALSE]
+  available_exog <- intersect(unique(cfg$EXOG_CONTROLS), names(stat_df))
 
-  list(level = level_df, stationary = stat_df, available = available)
+  endog_cols <- c("date", available_endog)
+  level_endog <- level_df[, endog_cols, drop = FALSE]
+  stat_endog <- stat_df[, endog_cols, drop = FALSE]
+
+  exog_df <- data.frame(date = stat_df$date, stringsAsFactors = FALSE)
+  if (length(available_exog) > 0L) {
+    exog_df <- stat_df[, c("date", available_exog), drop = FALSE]
+  }
+
+  list(
+    level = level_endog,
+    stationary = stat_endog,
+    exog = exog_df,
+    available = available_endog,
+    exog_available = available_exog
+  )
 }

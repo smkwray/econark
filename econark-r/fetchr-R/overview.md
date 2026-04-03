@@ -33,7 +33,10 @@ Interpolation methods:
 - `annual_to_monthly_denton`
 - `quarterly_to_monthly_dfm_clean`
 - `temporal_disagg` + explicit temporal routes (`annual_to_quarterly_temporal_disagg`, `annual_to_monthly_temporal_disagg`, `quarterly_to_monthly_temporal_disagg`)
-- `quarterly_to_monthly_dfm_state_space` (indicator-bridge route with optional bootstrap artifacts)
+  - `chow_lin`, `litterman`, and `fernandez` run through distinct GLS covariance routes in R.
+- `quarterly_to_monthly_dfm_state_space`
+  - latent-factor state-space DFM with PCA-initialized loadings and Kalman smoothing (`KFAS`)
+  - quarterly bridge + benchmarking with optional bootstrap artifacts on top of the smoothed monthly factors
 
 Route metadata contract:
 - interpolation summary rows include:

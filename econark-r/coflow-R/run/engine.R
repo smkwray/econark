@@ -232,6 +232,342 @@ coflow_safe_reverse_block_granger <- function(y, x, max_lags = 2L, criterion = "
   )
 }
 
+coflow_safe_numeric <- function(x) {
+  v <- suppressWarnings(as.numeric(x))
+  if (length(v) == 0L || !is.finite(v[[1L]])) NA_real_ else as.numeric(v[[1L]])
+}
+
+coflow_reduce_exog_window <- function(exog_df, cfg) {
+  x <- as.data.frame(exog_df, stringsAsFactors = FALSE, check.names = FALSE)
+  if (ncol(x) == 0L) return(NULL)
+
+  keep <- vapply(x, function(col) {
+    vals <- suppressWarnings(as.numeric(col))
+    stats::sd(vals, na.rm = TRUE) > 1e-8
+  }, logical(1))
+  x <- x[, keep, drop = FALSE]
+  if (ncol(x) == 0L) return(NULL)
+
+  for (nm in names(x)) {
+    vals <- suppressWarnings(as.numeric(x[[nm]]))
+    med <- if (any(is.finite(vals))) stats::median(vals[is.finite(vals)]) else 0
+    vals[!is.finite(vals)] <- med
+    x[[nm]] <- vals
+  }
+
+  use_pca <- isTRUE(cfg$USE_PCA_FOR_EXOG) && ncol(x) > 1L && nrow(x) > 10L
+  if (!use_pca) return(x)
+
+  pc <- tryCatch(
+    stats::prcomp(x, center = TRUE, scale. = TRUE),
+    error = function(e) NULL
+  )
+  if (is.null(pc) || is.null(pc$sdev) || length(pc$sdev) == 0L) return(x)
+
+  var_share <- (pc$sdev ^ 2) / sum(pc$sdev ^ 2)
+  cum_share <- cumsum(var_share)
+  thresh <- suppressWarnings(as.numeric(cfg$PCA_EXPLAINED_VAR_THRESHOLD))
+  if (!is.finite(thresh) || thresh <= 0 || thresh > 1) thresh <- 0.85
+  max_pc <- max(1L, as.integer(cfg$MAX_PCA_COMPONENTS))
+  n_pc <- which(cum_share >= thresh)[1L]
+  if (!is.finite(n_pc)) n_pc <- min(ncol(x), max_pc)
+  n_pc <- max(1L, min(max_pc, as.integer(n_pc)))
+
+  rot <- pc$x[, seq_len(n_pc), drop = FALSE]
+  out <- as.data.frame(rot, stringsAsFactors = FALSE, check.names = FALSE)
+  names(out) <- sprintf("pc_exog_%02d", seq_len(ncol(out)))
+  out
+}
+
+coflow_window_exog_matrix <- function(exog_df, idx, cfg, exclude_cols = character()) {
+  if (is.null(exog_df) || !is.data.frame(exog_df)) return(NULL)
+  cols <- setdiff(names(exog_df), c("date", exclude_cols))
+  if (length(cols) == 0L) return(NULL)
+  win <- exog_df[idx, cols, drop = FALSE]
+  if (nrow(win) == 0L || ncol(win) == 0L) return(NULL)
+  coflow_reduce_exog_window(win, cfg = cfg)
+}
+
+coflow_select_var_lag <- function(level_mat, exog_mat = NULL, max_lags = 2L, criterion = "bic", min_lag = 1L) {
+  max_lags <- max(as.integer(min_lag), as.integer(max_lags))
+  crit <- tolower(trimws(as.character(criterion)))
+  crit_name <- if (crit %in% c("aic")) "AIC(n)" else if (crit %in% c("hq", "hqic")) "HQ(n)" else "SC(n)"
+
+  if (!requireNamespace("vars", quietly = TRUE)) {
+    return(as.integer(max(min_lag, min(max_lags, 1L))))
+  }
+
+  lag_max_search <- max(as.integer(min_lag), max_lags)
+  sel <- tryCatch(
+    suppressWarnings(
+      vars::VARselect(
+        y = level_mat,
+        lag.max = lag_max_search,
+        type = "const",
+        exogen = exog_mat
+      )
+    ),
+    error = function(e) NULL
+  )
+  if (is.null(sel) || is.null(sel$selection) || is.null(sel$selection[[crit_name]])) {
+    return(as.integer(max(min_lag, min(max_lags, 1L))))
+  }
+
+  p <- suppressWarnings(as.integer(sel$selection[[crit_name]]))
+  if (!is.finite(p) || p < min_lag) p <- min_lag
+  as.integer(max(min_lag, min(lag_max_search, p)))
+}
+
+coflow_vecm_equation_models <- function(rlm) {
+  model_df <- as.data.frame(rlm$model, check.names = FALSE)
+  response_labels <- colnames(rlm$coefficients)
+  response_cols <- names(model_df)[seq_len(length(response_labels))]
+  predictor_cols <- setdiff(names(model_df), response_cols)
+
+  out <- list()
+  for (i in seq_along(response_labels)) {
+    response_col <- response_cols[[i]]
+    df <- data.frame(resp = suppressWarnings(as.numeric(model_df[[response_col]])), stringsAsFactors = FALSE)
+    pred_map <- setNames(character(0), character(0))
+    for (pred in predictor_cols) {
+      safe <- make.names(pred, unique = TRUE)
+      pred_map[[pred]] <- safe
+      df[[safe]] <- suppressWarnings(as.numeric(model_df[[pred]]))
+    }
+    rhs <- paste(unname(pred_map), collapse = " + ")
+    fit <- tryCatch(
+      stats::lm(stats::as.formula(sprintf("resp ~ %s - 1", rhs)), data = df),
+      error = function(e) NULL
+    )
+    out[[response_labels[[i]]]] <- list(fit = fit, predictor_map = pred_map)
+  }
+  out
+}
+
+coflow_equation_restriction_p <- function(eq_model, tested_prefixes) {
+  if (is.null(eq_model) || is.null(eq_model$fit) || !requireNamespace("car", quietly = TRUE)) return(NA_real_)
+  pred_map <- eq_model$predictor_map
+  if (length(pred_map) == 0L) return(NA_real_)
+
+  tested <- names(pred_map)[vapply(names(pred_map), function(nm) {
+    any(startsWith(nm, paste0(tested_prefixes, ".dl")))
+  }, logical(1))]
+  if (length(tested) == 0L) return(NA_real_)
+
+  lh <- tryCatch(
+    suppressWarnings(car::linearHypothesis(eq_model$fit, unname(pred_map[tested]), test = "F")),
+    error = function(e) NULL
+  )
+  if (is.null(lh) || nrow(lh) < 2L || !"Pr(>F)" %in% names(lh)) return(NA_real_)
+  coflow_safe_numeric(lh[2L, "Pr(>F)"])
+}
+
+coflow_fit_var_window <- function(stat_df, target, candidate_columns, exog_df = NULL, max_lags = 2L, criterion = "aic") {
+  endog_cols <- c(target, candidate_columns)
+  pair <- stat_df[, endog_cols, drop = FALSE]
+  if (!is.null(exog_df) && ncol(exog_df) > 0L) {
+    pair <- cbind(pair, exog_df)
+  }
+  pair <- pair[stats::complete.cases(pair), , drop = FALSE]
+  if (nrow(pair) < 24L) return(NULL)
+
+  endog <- pair[, endog_cols, drop = FALSE]
+  exog <- if (ncol(pair) > length(endog_cols)) pair[, setdiff(names(pair), endog_cols), drop = FALSE] else NULL
+  selected_lag <- coflow_select_var_lag(
+    level_mat = endog,
+    exog_mat = exog,
+    max_lags = max_lags,
+    criterion = criterion,
+    min_lag = 1L
+  )
+
+  fit <- tryCatch(
+    suppressWarnings(vars::VAR(y = endog, p = selected_lag, type = "const", exogen = exog)),
+    error = function(e) NULL
+  )
+  if (is.null(fit)) return(NULL)
+
+  resid <- as.data.frame(fit$resid, stringsAsFactors = FALSE)
+  if (nrow(resid) < 8L) return(NULL)
+
+  cand_primary <- tail(candidate_columns, 1L)
+  corr_test <- tryCatch(stats::cor.test(resid[[target]], resid[[cand_primary]]), error = function(e) NULL)
+  pearson_corr <- if (is.null(corr_test)) NA_real_ else coflow_safe_numeric(corr_test$estimate)
+  pearson_p <- if (is.null(corr_test)) NA_real_ else coflow_safe_numeric(corr_test$p.value)
+  var_t_stat <- if (is.finite(pearson_corr) && abs(pearson_corr) < 1) {
+    pearson_corr * sqrt((nrow(resid) - 2) / max(1e-8, 1 - pearson_corr ^ 2))
+  } else {
+    NA_real_
+  }
+
+  cause_forward <- tryCatch(
+    suppressWarnings(vars::causality(fit, cause = candidate_columns)$Granger),
+    error = function(e) NULL
+  )
+  cause_reverse <- tryCatch(
+    suppressWarnings(vars::causality(fit, cause = target)$Granger),
+    error = function(e) NULL
+  )
+
+  list(
+    selected_lag = as.integer(selected_lag),
+    n_obs_model = as.integer(nrow(resid)),
+    n_test_params = as.integer(length(candidate_columns) * selected_lag),
+    residual_corr = as.numeric(pearson_corr),
+    corr_p_value = as.numeric(pearson_p),
+    var_t_stat = as.numeric(var_t_stat),
+    p_val_C_on_T = coflow_safe_numeric(cause_forward$p.value),
+    p_val_T_on_C = coflow_safe_numeric(cause_reverse$p.value),
+    target_alpha = NA_real_,
+    target_t_stat = NA_real_,
+    candidate_alpha = NA_real_,
+    candidate_t_stat = NA_real_,
+    beta_coeff = NA_real_,
+    beta_p = NA_real_,
+    coint_rank = 0L,
+    coint_selected_lag = NA_integer_,
+    model_regime = "var",
+    model_type = "VAR",
+    model_stats_proxy = FALSE,
+    residual_corr_source = "var_residuals",
+    beta_coeff_source = "not_applicable",
+    exog_controls_used = !is.null(exog) && ncol(exog) > 0L
+  )
+}
+
+coflow_po_bucket_p <- function(po_fit) {
+  if (is.null(po_fit) || is.null(po_fit@cval) || length(po_fit@teststat) == 0L) return(NA_real_)
+  stat_val <- coflow_safe_numeric(po_fit@teststat[1L])
+  if (!is.finite(stat_val)) return(NA_real_)
+  c10 <- coflow_safe_numeric(po_fit@cval[1L, "10pct"])
+  c05 <- coflow_safe_numeric(po_fit@cval[1L, "5pct"])
+  c01 <- coflow_safe_numeric(po_fit@cval[1L, "1pct"])
+  if (is.finite(c01) && stat_val >= c01) return(0.01)
+  if (is.finite(c05) && stat_val >= c05) return(0.05)
+  if (is.finite(c10) && stat_val >= c10) return(0.10)
+  0.50
+}
+
+coflow_fit_vecm_window <- function(level_df, target, candidate_columns, exog_df = NULL, max_lags = 2L, criterion = "bic", coint_alpha = 0.05) {
+  endog_cols <- c(target, candidate_columns)
+  pair <- level_df[, endog_cols, drop = FALSE]
+  if (!is.null(exog_df) && ncol(exog_df) > 0L) {
+    pair <- cbind(pair, exog_df)
+  }
+  pair <- pair[stats::complete.cases(pair), , drop = FALSE]
+  if (nrow(pair) < 24L) return(NULL)
+
+  endog <- pair[, endog_cols, drop = FALSE]
+  exog <- if (ncol(pair) > length(endog_cols)) as.matrix(pair[, setdiff(names(pair), endog_cols), drop = FALSE]) else NULL
+  lag_k <- coflow_select_var_lag(
+    level_mat = endog,
+    exog_mat = exog,
+    max_lags = max_lags,
+    criterion = criterion,
+    min_lag = 2L
+  )
+
+  jo <- tryCatch(
+    suppressWarnings(urca::ca.jo(endog, type = "trace", ecdet = "none", K = lag_k, spec = "transitory", dumvar = exog)),
+    error = function(e) NULL
+  )
+  if (is.null(jo)) return(NULL)
+
+  col_idx <- coflow_johansen_crit_col(coint_alpha)
+  col_idx <- min(max(1L, col_idx), ncol(jo@cval))
+  max_rank <- min(length(jo@teststat), ncol(endog) - 1L)
+  rank <- 0L
+  for (i in seq_len(max_rank)) {
+    stat_val <- coflow_safe_numeric(jo@teststat[i])
+    crit_val <- coflow_safe_numeric(jo@cval[i, col_idx])
+    if (!is.finite(stat_val) || !is.finite(crit_val)) break
+    if (stat_val > crit_val) rank <- i else break
+  }
+  if (rank < 1L) return(NULL)
+
+  rls <- tryCatch(suppressWarnings(urca::cajorls(jo, r = rank)), error = function(e) NULL)
+  if (is.null(rls) || is.null(rls$rlm)) return(NULL)
+
+  eq_models <- coflow_vecm_equation_models(rls$rlm)
+  coef_summ <- coef(summary(rls$rlm))
+  eq_key <- function(resp) {
+    hit <- names(coef_summ)[grepl(sprintf("Response %s$", resp), names(coef_summ))]
+    if (length(hit) == 0L) NULL else coef_summ[[hit[[1L]]]]
+  }
+
+  target_resp <- sprintf("%s.d", target)
+  cand_primary <- tail(candidate_columns, 1L)
+  cand_resp <- sprintf("%s.d", cand_primary)
+  target_coef <- eq_key(target_resp)
+  if (is.null(target_coef)) return(NULL)
+
+  ect_terms <- rownames(target_coef)[startsWith(rownames(target_coef), "ect")]
+  if (length(ect_terms) == 0L) return(NULL)
+  selected_relation <- ect_terms[[which.min(target_coef[ect_terms, "Estimate"])]]
+
+  target_alpha <- coflow_safe_numeric(target_coef[selected_relation, "Estimate"])
+  target_t_stat <- coflow_safe_numeric(target_coef[selected_relation, "t value"])
+
+  candidate_eqs <- lapply(candidate_columns, function(col) eq_key(sprintf("%s.d", col)))
+  cand_alpha_vals <- vapply(candidate_eqs, function(mat) {
+    if (is.null(mat) || !selected_relation %in% rownames(mat)) NA_real_ else coflow_safe_numeric(mat[selected_relation, "Estimate"])
+  }, numeric(1))
+  candidate_alpha <- if (all(!is.finite(cand_alpha_vals))) NA_real_ else as.numeric(mean(cand_alpha_vals[is.finite(cand_alpha_vals)]))
+  cand_coef <- eq_key(cand_resp)
+  candidate_t_stat <- if (is.null(cand_coef) || !selected_relation %in% rownames(cand_coef)) NA_real_ else coflow_safe_numeric(cand_coef[selected_relation, "t value"])
+
+  resid <- as.data.frame(rls$rlm$residuals, stringsAsFactors = FALSE)
+  names(resid) <- colnames(rls$rlm$coefficients)
+  corr_test <- tryCatch(stats::cor.test(resid[[target_resp]], resid[[cand_resp]]), error = function(e) NULL)
+  residual_corr <- if (is.null(corr_test)) NA_real_ else coflow_safe_numeric(corr_test$estimate)
+  corr_p <- if (is.null(corr_test)) NA_real_ else coflow_safe_numeric(corr_test$p.value)
+
+  p_forward <- coflow_equation_restriction_p(eq_models[[target_resp]], tested_prefixes = candidate_columns)
+  p_reverse_vec <- vapply(candidate_columns, function(col) {
+    coflow_equation_restriction_p(eq_models[[sprintf("%s.d", col)]], tested_prefixes = target)
+  }, numeric(1))
+  p_reverse <- coflow_fisher_combine_p(p_reverse_vec)$p
+
+  beta_mat <- rls$beta
+  beta_coeff <- NA_real_
+  if (!is.null(beta_mat) && selected_relation %in% colnames(beta_mat)) {
+    avail <- intersect(candidate_columns, rownames(beta_mat))
+    if (length(avail) > 0L) {
+      beta_coeff <- -sum(beta_mat[avail, selected_relation], na.rm = TRUE)
+    }
+  }
+
+  target_pred_names <- names(eq_models[[target_resp]]$predictor_map)
+  n_test_params <- sum(vapply(target_pred_names, function(nm) {
+    any(startsWith(nm, paste0(candidate_columns, ".dl")))
+  }, logical(1)))
+
+  list(
+    selected_lag = as.integer(max(1L, lag_k - 1L)),
+    n_obs_model = as.integer(nrow(resid)),
+    n_test_params = as.integer(n_test_params),
+    residual_corr = as.numeric(residual_corr),
+    corr_p_value = as.numeric(corr_p),
+    var_t_stat = NA_real_,
+    p_val_C_on_T = as.numeric(p_forward),
+    p_val_T_on_C = as.numeric(p_reverse),
+    target_alpha = as.numeric(target_alpha),
+    target_t_stat = as.numeric(target_t_stat),
+    candidate_alpha = as.numeric(candidate_alpha),
+    candidate_t_stat = as.numeric(candidate_t_stat),
+    beta_coeff = as.numeric(beta_coeff),
+    beta_p = NA_real_,
+    coint_rank = as.integer(rank),
+    coint_selected_lag = as.integer(lag_k),
+    model_regime = "vecm",
+    model_type = "VECM",
+    model_stats_proxy = FALSE,
+    residual_corr_source = "vecm_residuals",
+    beta_coeff_source = "vecm_cointegration_vector",
+    exog_controls_used = !is.null(exog) && ncol(exog) > 0L
+  )
+}
+
 coflow_safe_engle_granger <- function(y_level, x_level) {
   y <- as.numeric(y_level)
   x <- as.matrix(x_level)
@@ -265,21 +601,11 @@ coflow_safe_engle_granger <- function(y_level, x_level) {
     beta_p <- suppressWarnings(as.numeric(sm$coefficients[x_names[[1L]], "Pr(>|t|)"]))
   }
 
-  e <- stats::residuals(fit)
-  de <- c(NA_real_, diff(e))
-  e_l1 <- c(NA_real_, e[-length(e)])
-  adf_df <- data.frame(de = de, e_l1 = e_l1)
-  adf_df <- adf_df[stats::complete.cases(adf_df), , drop = FALSE]
-  if (nrow(adf_df) < 16) return(list(beta = beta, beta_p = beta_p, coint_p = NA_real_))
-
-  adf_fit <- tryCatch(stats::lm(de ~ e_l1, data = adf_df), error = function(e) NULL)
-  if (is.null(adf_fit)) return(list(beta = beta, beta_p = beta_p, coint_p = NA_real_))
-  adf_sm <- summary(adf_fit)
-  t_stat <- suppressWarnings(as.numeric(adf_sm$coefficients["e_l1", "t value"]))
-  if (!is.finite(t_stat)) return(list(beta = beta, beta_p = beta_p, coint_p = NA_real_))
-
-  # Approximation: one-sided normal tail on negative t (stationary residual => negative).
-  coint_p <- stats::pnorm(t_stat)
+  po <- tryCatch(
+    suppressWarnings(urca::ca.po(df[, c("y", x_names), drop = FALSE], demean = "constant", lag = "short", type = "Pu")),
+    error = function(e) NULL
+  )
+  coint_p <- coflow_po_bucket_p(po)
   list(beta = beta, beta_p = beta_p, coint_p = coint_p)
 }
 
@@ -291,30 +617,17 @@ coflow_johansen_crit_col <- function(alpha) {
   as.integer(idx)
 }
 
-coflow_select_var_lag_for_johansen <- function(level_mat, max_lags = 2L, criterion = "bic") {
-  max_lags <- max(1L, as.integer(max_lags))
-  crit <- tolower(trimws(as.character(criterion)))
-  crit_name <- if (crit %in% c("aic")) "AIC(n)" else if (crit %in% c("hq", "hqic")) "HQ(n)" else "SC(n)"
-
-  if (!requireNamespace("vars", quietly = TRUE)) {
-    return(as.integer(max(2L, max_lags)))
-  }
-
-  lag_max_search <- max(2L, max_lags + 1L)
-  sel <- tryCatch(
-    suppressWarnings(vars::VARselect(level_mat, lag.max = lag_max_search, type = "none")),
-    error = function(e) NULL
+coflow_select_var_lag_for_johansen <- function(level_mat, exog_mat = NULL, max_lags = 2L, criterion = "bic") {
+  coflow_select_var_lag(
+    level_mat = level_mat,
+    exog_mat = exog_mat,
+    max_lags = max_lags,
+    criterion = criterion,
+    min_lag = 2L
   )
-  if (is.null(sel) || is.null(sel$selection) || is.null(sel$selection[[crit_name]])) {
-    return(as.integer(max(2L, max_lags)))
-  }
-
-  p <- suppressWarnings(as.integer(sel$selection[[crit_name]]))
-  if (!is.finite(p) || p < 1L) p <- max_lags
-  as.integer(max(2L, min(lag_max_search, p)))
 }
 
-coflow_safe_johansen_rank <- function(y_level, x_level, max_lags = 2L, criterion = "bic", coint_alpha = 0.05) {
+coflow_safe_johansen_rank <- function(y_level, x_level, exog_level = NULL, max_lags = 2L, criterion = "bic", coint_alpha = 0.05) {
   if (!requireNamespace("urca", quietly = TRUE)) {
     return(list(rank = NA_integer_, lag = NA_integer_, method = "engle_granger_fallback"))
   }
@@ -326,19 +639,26 @@ coflow_safe_johansen_rank <- function(y_level, x_level, max_lags = 2L, criterion
   }
 
   lvl <- data.frame(y = y, x, check.names = FALSE)
+  if (!is.null(exog_level) && nrow(as.data.frame(exog_level)) == nrow(lvl)) {
+    lvl <- cbind(lvl, as.data.frame(exog_level, check.names = FALSE))
+  }
   lvl <- lvl[stats::complete.cases(lvl), , drop = FALSE]
-  if (nrow(lvl) < 24L || ncol(lvl) < 2L) {
+  endog_cols <- c("y", colnames(x))
+  if (nrow(lvl) < 24L || length(endog_cols) < 2L) {
     return(list(rank = NA_integer_, lag = NA_integer_, method = "engle_granger_fallback"))
   }
+  endog <- lvl[, endog_cols, drop = FALSE]
+  exog <- if (ncol(lvl) > length(endog_cols)) as.matrix(lvl[, setdiff(names(lvl), endog_cols), drop = FALSE]) else NULL
 
   lag_k <- coflow_select_var_lag_for_johansen(
-    level_mat = lvl,
+    level_mat = endog,
+    exog_mat = exog,
     max_lags = max_lags,
     criterion = criterion
   )
 
   jo <- tryCatch(
-    suppressWarnings(urca::ca.jo(lvl, type = "trace", ecdet = "none", K = lag_k, spec = "transitory")),
+    suppressWarnings(urca::ca.jo(endog, type = "trace", ecdet = "none", K = lag_k, spec = "transitory", dumvar = exog)),
     error = function(e) NULL
   )
   if (is.null(jo)) {
@@ -353,7 +673,7 @@ coflow_safe_johansen_rank <- function(y_level, x_level, max_lags = 2L, criterion
   col_idx <- coflow_johansen_crit_col(coint_alpha)
   col_idx <- min(max(1L, col_idx), ncol(cval))
 
-  max_rank <- min(length(teststat), ncol(lvl) - 1L)
+  max_rank <- min(length(teststat), ncol(endog) - 1L)
   rank <- 0L
   for (i in seq_len(max_rank)) {
     crit_val <- suppressWarnings(as.numeric(cval[i, col_idx]))
@@ -378,7 +698,7 @@ coflow_resolve_regime <- function(coint_rank) {
   if (is.finite(coint_rank) && as.integer(coint_rank) > 0L) "vecm" else "var"
 }
 
-coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_columns, window_size, max_lags = 2L, min_obs = 36L, lag_selection_criterion = "aic", coint_alpha = 0.05, coint_method = "auto", granger_sig_threshold = 0.05) {
+coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_columns, window_size, max_lags = 2L, min_obs = 36L, lag_selection_criterion = "aic", coint_alpha = 0.05, coint_method = "auto", granger_sig_threshold = 0.05, exog_df = NULL, cfg = list()) {
   if (!(target %in% names(level_df))) return(data.frame())
   if (!(target %in% names(stat_df))) return(data.frame())
   if (length(candidate_columns) == 0L) return(data.frame())
@@ -398,6 +718,12 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
     x_l <- as.matrix(level_df[idx, candidate_columns, drop = FALSE])
     y_s <- as.numeric(stat_df[[target]][idx])
     x_s <- as.matrix(stat_df[idx, candidate_columns, drop = FALSE])
+    exog_win <- coflow_window_exog_matrix(
+      exog_df = exog_df,
+      idx = idx,
+      cfg = cfg,
+      exclude_cols = c(target, candidate_columns)
+    )
 
     valid_stat <- is.finite(y_s) & rowSums(is.finite(x_s)) == ncol(x_s)
     valid_lvl <- is.finite(y_l) & rowSums(is.finite(x_l)) == ncol(x_l)
@@ -408,22 +734,6 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
     if (stats::sd(y_s[valid_stat]) < 1e-8) next
     if (any(apply(x_s[valid_stat, , drop = FALSE], 2L, stats::sd, na.rm = TRUE) < 1e-8)) next
 
-    corr_vec <- suppressWarnings(stats::cor(y_s, x_s, use = "complete.obs"))
-    if (is.matrix(corr_vec)) corr_vec <- as.numeric(corr_vec)
-    corr <- suppressWarnings(as.numeric(mean(corr_vec, na.rm = TRUE)))
-
-    gr <- coflow_safe_block_granger(
-      y = y_s,
-      x = x_s,
-      max_lags = max_lags,
-      criterion = lag_selection_criterion
-    )
-    rev <- coflow_safe_reverse_block_granger(
-      y = y_s,
-      x = x_s,
-      max_lags = max_lags,
-      criterion = lag_selection_criterion
-    )
     eg <- coflow_safe_engle_granger(y_level = y_l, x_level = x_l)
     method_mode <- tolower(trimws(as.character(coint_method)))
     if (!method_mode %in% c("auto", "johansen", "engle_granger")) method_mode <- "auto"
@@ -433,6 +743,7 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
       jh <- coflow_safe_johansen_rank(
         y_level = y_l,
         x_level = x_l,
+        exog_level = exog_win,
         max_lags = max_lags,
         criterion = lag_selection_criterion,
         coint_alpha = coint_alpha
@@ -442,12 +753,35 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
     coint_rank <- if (is.finite(as.numeric(jh$rank))) as.integer(jh$rank) else coflow_resolve_coint_rank(eg$coint_p, coint_alpha = coint_alpha)
     coint_method_used <- if (is.finite(as.numeric(jh$rank))) as.character(jh$method) else "engle_granger_proxy"
     coint_selected_lag <- if (is.finite(as.numeric(jh$lag))) as.integer(jh$lag) else NA_integer_
-    regime <- coflow_resolve_regime(coint_rank)
+    fit_res <- NULL
+    if (coint_rank > 0L) {
+      fit_res <- coflow_fit_vecm_window(
+        level_df = level_df[idx, c(target, candidate_columns), drop = FALSE],
+        target = target,
+        candidate_columns = candidate_columns,
+        exog_df = exog_win,
+        max_lags = max_lags,
+        criterion = lag_selection_criterion,
+        coint_alpha = coint_alpha
+      )
+    }
+    if (is.null(fit_res)) {
+      fit_res <- coflow_fit_var_window(
+        stat_df = stat_df[idx, c(target, candidate_columns), drop = FALSE],
+        target = target,
+        candidate_columns = candidate_columns,
+        exog_df = exog_win,
+        max_lags = max_lags,
+        criterion = lag_selection_criterion
+      )
+    }
+    if (is.null(fit_res)) next
 
+    regime <- fit_res$model_regime
     sig_threshold <- suppressWarnings(as.numeric(granger_sig_threshold))
     if (!is.finite(sig_threshold) || sig_threshold <= 0 || sig_threshold >= 1) sig_threshold <- 0.05
-    causal_sig <- is.finite(as.numeric(gr$p)) && as.numeric(gr$p) <= sig_threshold
-    reverse_sig <- is.finite(as.numeric(rev$p)) && as.numeric(rev$p) <= sig_threshold
+    causal_sig <- is.finite(as.numeric(fit_res$p_val_C_on_T)) && as.numeric(fit_res$p_val_C_on_T) <= sig_threshold
+    reverse_sig <- is.finite(as.numeric(fit_res$p_val_T_on_C)) && as.numeric(fit_res$p_val_T_on_C) <= sig_threshold
 
     out[[length(out) + 1L]] <- data.frame(
       date = d,
@@ -458,33 +792,45 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
       window_end = d,
       rolling_window = as.integer(window_size),
       n_obs = as.integer(n_stat),
-      residual_corr = as.numeric(corr),
-      causality_p = as.numeric(gr$p),
-      causality_fstat = as.numeric(gr$f_stat),
-      causality_df1 = as.numeric(gr$df1),
-      causality_df2 = as.numeric(gr$df2),
-      causality_reverse_p = as.numeric(rev$p),
-      causality_reverse_fisher = as.numeric(rev$fisher_stat),
-      causality_reverse_df = as.numeric(rev$fisher_df),
-      causality_reverse_fstat = as.numeric(rev$median_fstat),
+      residual_corr = as.numeric(fit_res$residual_corr),
+      causality_p = as.numeric(fit_res$p_val_C_on_T),
+      causality_fstat = NA_real_,
+      causality_df1 = NA_real_,
+      causality_df2 = NA_real_,
+      causality_reverse_p = as.numeric(fit_res$p_val_T_on_C),
+      causality_reverse_fisher = NA_real_,
+      causality_reverse_df = NA_real_,
+      causality_reverse_fstat = NA_real_,
       granger_sig_threshold = as.numeric(sig_threshold),
       causality_significant = as.logical(causal_sig),
       causality_reverse_significant = as.logical(reverse_sig),
-      selected_lag = as.integer(gr$selected_lag),
-      reverse_selected_lag = as.numeric(rev$median_lag),
-      n_obs_model = as.integer(gr$n_obs_model),
-      n_test_params = as.integer(gr$n_test_params),
+      selected_lag = as.integer(fit_res$selected_lag),
+      reverse_selected_lag = as.numeric(fit_res$selected_lag),
+      n_obs_model = as.integer(fit_res$n_obs_model),
+      n_test_params = as.integer(fit_res$n_test_params),
       candidate_block_size = as.integer(ncol(x_s)),
-      beta_coeff = as.numeric(eg$beta),
-      beta_p = as.numeric(eg$beta_p),
+      beta_coeff = as.numeric(ifelse(is.finite(fit_res$beta_coeff), fit_res$beta_coeff, eg$beta)),
+      beta_p = as.numeric(ifelse(is.finite(fit_res$beta_p), fit_res$beta_p, eg$beta_p)),
       coint_method_requested = as.character(method_mode),
       coint_p = as.numeric(eg$coint_p),
-      coint_rank = as.integer(coint_rank),
+      coint_rank = as.integer(ifelse(is.finite(fit_res$coint_rank), fit_res$coint_rank, coint_rank)),
       coint_method = as.character(coint_method_used),
-      coint_selected_lag = as.integer(coint_selected_lag),
+      coint_selected_lag = as.integer(ifelse(is.finite(fit_res$coint_selected_lag), fit_res$coint_selected_lag, coint_selected_lag)),
       coint_alpha = as.numeric(coint_alpha),
       model_regime = as.character(regime),
-      model_type = toupper(as.character(regime)),
+      model_type = as.character(fit_res$model_type),
+      target_alpha = as.numeric(fit_res$target_alpha),
+      target_t_stat = as.numeric(fit_res$target_t_stat),
+      candidate_alpha = as.numeric(fit_res$candidate_alpha),
+      candidate_t_stat = as.numeric(fit_res$candidate_t_stat),
+      p_val_C_on_T = as.numeric(fit_res$p_val_C_on_T),
+      p_val_T_on_C = as.numeric(fit_res$p_val_T_on_C),
+      var_t_stat = as.numeric(fit_res$var_t_stat),
+      corr_p_value = as.numeric(fit_res$corr_p_value),
+      model_stats_proxy = as.logical(fit_res$model_stats_proxy),
+      residual_corr_source = as.character(fit_res$residual_corr_source),
+      beta_coeff_source = as.character(fit_res$beta_coeff_source),
+      exog_controls_used = as.logical(fit_res$exog_controls_used),
       stringsAsFactors = FALSE
     )
   }
@@ -496,6 +842,7 @@ coflow_run_pair <- function(level_df, stat_df, target, candidate, candidate_colu
 coflow_run_window <- function(data_bundle, cfg, window_size) {
   level_df <- data_bundle$level
   stat_df <- data_bundle$stationary
+  exog_df <- data_bundle$exog
   results <- list()
   level_names <- names(level_df)
   stat_names <- names(stat_df)
@@ -530,7 +877,9 @@ coflow_run_window <- function(data_bundle, cfg, window_size) {
         lag_selection_criterion = cfg$VAR_LAG_SELECTION_CRITERION,
         coint_alpha = cfg$COINT_ALPHA,
         coint_method = cfg$COINT_METHOD,
-        granger_sig_threshold = cfg$GRANGER_SIG_THRESHOLD
+        granger_sig_threshold = cfg$GRANGER_SIG_THRESHOLD,
+        exog_df = exog_df,
+        cfg = cfg
       )
     }
   }

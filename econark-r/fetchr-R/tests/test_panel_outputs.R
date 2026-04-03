@@ -6,6 +6,7 @@ fetchr_root <- dirname(tests_dir)
 run_dir <- file.path(fetchr_root, "run")
 
 source(file.path(run_dir, "io_utils.R"))
+source(file.path(run_dir, "interpolate.R"))
 source(file.path(run_dir, "assemble.R"))
 source(file.path(run_dir, "panel_outputs.R"))
 
@@ -185,6 +186,21 @@ run_test("Mixed panel task creates sparse quarterly columns and replay outputs",
 
   .assert(identical(readLines(dense_src), readLines(replay_dense)), "mixed replay dense copy mismatch")
   .assert(identical(readLines(sparse_src), readLines(replay_sparse)), "mixed replay sparse copy mismatch")
+})
+
+run_test("Mixed upsampling preserves stock semantics for first and last", function() {
+  quarterly_last <- .series(c("2020-03-31", "2020-06-30"), c(100, 120))
+  quarterly_first <- .series(c("2020-03-31", "2020-06-30"), c(80, 95))
+
+  last_monthly <- .to_monthly(quarterly_last, source_frequency = "Q", low_agg = "last")
+  first_monthly <- .to_monthly(quarterly_first, source_frequency = "Q", low_agg = "first")
+
+  .assert(nrow(last_monthly) == 6L, "quarterly last should expand to six monthly rows")
+  .assert(nrow(first_monthly) == 6L, "quarterly first should expand to six monthly rows")
+  .assert(all(last_monthly$value[1:3] == 100), "quarterly last should broadcast the first quarter level")
+  .assert(all(last_monthly$value[4:6] == 120), "quarterly last should broadcast the second quarter level")
+  .assert(all(first_monthly$value[1:3] == 80), "quarterly first should broadcast the first quarter level")
+  .assert(all(first_monthly$value[4:6] == 95), "quarterly first should broadcast the second quarter level")
 })
 
 message("[PASS] fetchr-R panel output tests complete")

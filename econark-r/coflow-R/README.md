@@ -4,11 +4,16 @@ R-native CoFlow-style exploratory rolling ranking for poverty/inequality consump
 
 ## Scope
 
-This port targets methodological parity with Python CoFlow:
+This port targets contract and workflow parity with Python CoFlow:
 - rolling pairwise dynamic association screening,
 - lag-selected Granger-style block exclusion tests (nested OLS F-test, AIC/BIC selectable),
 - Johansen-trace cointegration rank switching (with Engle-Granger fallback),
 - BH-FDR corrected directional rankings.
+
+Current R implementation notes:
+- rolling windows now fit regime-specific `VAR`/`VECM` models and stamp source fields so downstream consumers can distinguish fitted quantities from fallback paths
+- `EXOG_CONTROLS` are threaded into rolling model fits, with optional PCA compression when configured
+- the Engle-Granger fallback now uses a Phillips-Ouliaris-style critical-value bucket instead of a normal-tail proxy p-value
 
 It is designed for methodological equivalency, not byte-for-byte output identity.
 
