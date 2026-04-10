@@ -70,6 +70,10 @@ SHOCK_W_MAX <- 120
 SHOCK_W_SELECT <- "corr_t_then_variance"
 SHOCK_MIN_R2 <- -0.05
 SHOCK_MAX_CONVERGENCE_WARNINGS <- 3
+SHOCK_TARGET_TRANSFORM <- "diff"
+SHOCK_INCLUDE_OWN_DIFF_LAGS <- TRUE
+SHOCK_INCLUDE_OWN_LEVEL_LAGS <- FALSE
+SHOCK_OWN_LAGS <- 4
 SHOCK_RETRY_MAX_ATTEMPTS <- 6
 SHOCK_RETRY_L1_RATIO_GRID <- c(0.7, 0.9, 1.0)
 SHOCK_RETRY_MAX_ITER_GRID <- c(20000, 50000)
@@ -99,6 +103,7 @@ SPEC_RECOMMENDED_BASELINE_JSON <- file.path(OUT_DIR, "spec_recommended_baseline.
 W_SPEC_SHIFT_SUMMARY_CSV <- file.path(OUT_DIR, "w_spec_shift_summary.csv")
 LEAD_ANTICIPATION_CSV <- file.path(OUT_DIR, "lead_anticipation_checks.csv")
 LEAD_ANTICIPATION_MD <- file.path(OUT_DIR, "lead_anticipation_checks.md")
+LEAD_TEST_N_LEADS <- 2
 EPISODE_LEAVEOUT_CSV <- file.path(OUT_DIR, "episode_leaveout_checks.csv")
 EPISODE_LEAVEOUT_SUMMARY_CSV <- file.path(OUT_DIR, "episode_leaveout_summary.csv")
 EPISODE_LEAVEOUT_MD <- file.path(OUT_DIR, "episode_leaveout_checks.md")

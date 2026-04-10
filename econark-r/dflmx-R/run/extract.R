@@ -10,12 +10,8 @@ choose_k <- function(explained, cfg, n_samples, n_features) {
   max(lower, min(upper, as.integer(k_target)))
 }
 
-run_extract <- function(cfg, dry_run = FALSE) {
-  panel_path <- as.character(cfg$FACTOR_PANEL_CSV)
-  if (!file.exists(panel_path)) stop(sprintf("Missing factor panel: %s", panel_path))
-  panel <- utils::read.csv(panel_path, stringsAsFactors = FALSE)
+.extract_factor_bundle <- function(panel, cfg, k_override = NULL) {
   if (!"quarter_end" %in% names(panel)) stop("Expected quarter_end in factor panel")
-
   feats <- setdiff(names(panel), "quarter_end")
   X <- panel[, feats, drop = FALSE]
   for (c in feats) {
@@ -26,7 +22,9 @@ run_extract <- function(cfg, dry_run = FALSE) {
   Xs <- scale(X)
   pca_full <- stats::prcomp(Xs, center = FALSE, scale. = FALSE)
   explained_full <- (pca_full$sdev^2) / sum(pca_full$sdev^2)
-  k <- choose_k(explained_full, cfg, nrow(Xs), ncol(Xs))
+  k <- if (is.null(k_override)) choose_k(explained_full, cfg, nrow(Xs), ncol(Xs)) else as.integer(k_override)
+  if (!is.finite(k) || k < 1L) k <- 1L
+  k <- min(k, ncol(Xs), nrow(Xs))
 
   pca <- stats::prcomp(Xs, center = FALSE, scale. = FALSE, rank. = k)
   scores <- as.data.frame(pca$x[, seq_len(k), drop = FALSE])
@@ -94,16 +92,33 @@ run_extract <- function(cfg, dry_run = FALSE) {
     cards <- c(cards, "")
   }
 
-  if (isTRUE(dry_run)) return(invisible(diag))
+  list(
+    scores = scores,
+    loadings = loadings,
+    diagnostics = diag,
+    top_loadings = top_df,
+    cards = cards,
+    k = as.integer(k),
+    explained_full = explained_full
+  )
+}
+
+run_extract <- function(cfg, dry_run = FALSE) {
+  panel_path <- as.character(cfg$FACTOR_PANEL_CSV)
+  if (!file.exists(panel_path)) stop(sprintf("Missing factor panel: %s", panel_path))
+  panel <- utils::read.csv(panel_path, stringsAsFactors = FALSE)
+  bundle <- .extract_factor_bundle(panel, cfg)
+
+  if (isTRUE(dry_run)) return(invisible(bundle$diagnostics))
 
   ensure_out_dir(cfg)
-  factors_out <- data.frame(quarter_end = panel$quarter_end, scores, stringsAsFactors = FALSE)
-  loadings_out <- data.frame(feature = rownames(loadings), loadings, stringsAsFactors = FALSE)
+  factors_out <- data.frame(quarter_end = panel$quarter_end, bundle$scores, stringsAsFactors = FALSE)
+  loadings_out <- data.frame(feature = rownames(bundle$loadings), bundle$loadings, stringsAsFactors = FALSE)
   utils::write.csv(factors_out, cfg$FACTORS_CSV, row.names = FALSE)
   utils::write.csv(loadings_out, cfg$LOADINGS_CSV, row.names = FALSE)
-  utils::write.csv(diag, cfg$FACTOR_DIAGNOSTICS_CSV, row.names = FALSE)
-  utils::write.csv(top_df, cfg$TOP_LOADINGS_CSV, row.names = FALSE)
+  utils::write.csv(bundle$diagnostics, cfg$FACTOR_DIAGNOSTICS_CSV, row.names = FALSE)
+  utils::write.csv(bundle$top_loadings, cfg$TOP_LOADINGS_CSV, row.names = FALSE)
   write_json(cfg$SERIES_NAME_DICT_JSON, list())
-  writeLines(cards, con = cfg$FACTOR_CARDS_MD)
-  invisible(diag)
+  writeLines(bundle$cards, con = cfg$FACTOR_CARDS_MD)
+  invisible(bundle$diagnostics)
 }

@@ -54,43 +54,57 @@
   valid
 }
 
-.build_treatment_shock <- function(tcol, merged, w_cols, cfg) {
-  d0 <- as.numeric(merged[[tcol]])
-  d_diff <- c(NA_real_, diff(d0))
-
-  w_max <- as.integer(cfg$SHOCK_W_MAX)
-  if (!is.finite(w_max) || w_max <= 0) w_max <- length(w_cols)
-  wsel <- if (length(w_cols) > w_max) {
-    choose_w_cols_dflmx(merged[, w_cols, drop = FALSE], d_diff, w_max, as.character(cfg$SHOCK_W_SELECT))
-  } else {
-    w_cols
+.shock_transform_series <- function(series, mode) {
+  mode <- tolower(trimws(as.character(mode[[1]])))
+  x <- suppressWarnings(as.numeric(series))
+  if (mode %in% c("", "diff")) return(c(NA_real_, diff(x)))
+  if (mode == "level") return(x)
+  if (mode == "logdiff") {
+    lx <- ifelse(is.finite(x) & x > 0, log(x), NA_real_)
+    return(c(NA_real_, diff(lx)))
   }
-  if (length(wsel) == 0) wsel <- w_cols
-
-  W <- merged[, wsel, drop = FALSE]
-  for (c in names(W)) {
-    W[[c]] <- suppressWarnings(as.numeric(W[[c]]))
-    med <- stats::median(W[[c]], na.rm = TRUE)
-    if (!is.finite(med)) med <- 0
-    W[[c]][is.na(W[[c]])] <- med
+  if (mode == "pct_change") {
+    lagx <- c(NA_real_, x[-length(x)])
+    return((x / lagx) - 1)
   }
+  c(NA_real_, diff(x))
+}
 
-  valid <- !is.na(d_diff)
-  l1_ratio <- if (!is.null(cfg$SHOCK_L1_RATIO) && length(cfg$SHOCK_L1_RATIO) > 0) as.numeric(cfg$SHOCK_L1_RATIO)[1] else 0.9
-  cv <- if (!is.null(cfg$SHOCK_CV) && length(cfg$SHOCK_CV) > 0) as.integer(cfg$SHOCK_CV)[1] else 3L
-  max_iter <- if (!is.null(cfg$SHOCK_MAX_ITER) && length(cfg$SHOCK_MAX_ITER) > 0) as.integer(cfg$SHOCK_MAX_ITER)[1] else 20000L
-  if (!is.finite(l1_ratio) || l1_ratio <= 0 || l1_ratio > 1) l1_ratio <- 0.9
-  if (!is.finite(cv) || cv < 2) cv <- 3L
-  if (!is.finite(max_iter) || max_iter < 1000) max_iter <- 20000L
-  min_r2 <- as.numeric(cfg$SHOCK_MIN_R2)
-  max_warn <- as.integer(cfg$SHOCK_MAX_CONVERGENCE_WARNINGS)
+.shock_own_lag_matrix <- function(series, max_lags, prefix) {
+  max_lags <- suppressWarnings(as.integer(max_lags))
+  if (!is.finite(max_lags) || max_lags <= 0) return(data.frame())
+  x <- suppressWarnings(as.numeric(series))
+  out <- list()
+  for (i in seq_len(max_lags)) {
+    out[[sprintf("%s_lag%03d", prefix, i)]] <- c(rep(NA_real_, i), x[seq_len(max(0, length(x) - i))])
+  }
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
 
+.shock_build_design <- function(tcol, merged, w_cols, cfg) {
+  level <- suppressWarnings(as.numeric(merged[[tcol]]))
+  transform_mode <- as.character(.prop_cfg_or(cfg, "SHOCK_TARGET_TRANSFORM", "diff"))
+  target <- .shock_transform_series(level, transform_mode)
+  base_w_cols <- intersect(as.character(w_cols), names(merged))
+  design <- if (length(base_w_cols) == 0) data.frame(row.names = seq_len(nrow(merged))) else merged[, base_w_cols, drop = FALSE]
+
+  own_lags <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "SHOCK_OWN_LAGS", 0L)))
+  if (isTRUE(.prop_cfg_or(cfg, "SHOCK_INCLUDE_OWN_DIFF_LAGS", FALSE))) {
+    own_diff <- .shock_transform_series(level, "diff")
+    design <- cbind(design, .shock_own_lag_matrix(own_diff, own_lags, "own_diff"))
+  }
+  if (isTRUE(.prop_cfg_or(cfg, "SHOCK_INCLUDE_OWN_LEVEL_LAGS", FALSE))) {
+    design <- cbind(design, .shock_own_lag_matrix(level, own_lags, "own_level"))
+  }
+  list(target = target, design = design)
+}
+
+.fit_treatment_shock_attempt <- function(tcol, target, W, valid, l1_ratio, cv, max_iter, max_warn) {
+  pred <- rep(mean(target, na.rm = TRUE), length(target))
   model <- "mean_only"
   r2 <- NA_real_
-  pred <- rep(mean(d_diff, na.rm = TRUE), length(d_diff))
   top_predictors <- list()
   glmnet_warnings <- character()
-  convergence_warning_count <- 0L
   .safe_r2 <- function(y_true, y_pred, valid_mask) {
     idx <- as.logical(valid_mask)
     idx <- idx & is.finite(y_true) & is.finite(y_pred)
@@ -106,18 +120,13 @@
 
   if (sum(valid) >= 10 && ncol(W) > 0) {
     if (requireNamespace("glmnet", quietly = TRUE)) {
-      seed_base <- suppressWarnings(as.integer(cfg$RANDOM_SEED))
-      if (!is.finite(seed_base)) seed_base <- 42L
-      seed_local <- abs(seed_base + sum(utf8ToInt(as.character(tcol)))) %% .Machine$integer.max
-      set.seed(seed_local)
-      nfolds <- max(2L, min(cv, sum(valid)))
       fit <- tryCatch(
         withCallingHandlers(
           glmnet::cv.glmnet(
             x = as.matrix(W[valid, , drop = FALSE]),
-            y = d_diff[valid],
+            y = target[valid],
             alpha = l1_ratio,
-            nfolds = nfolds,
+            nfolds = max(2L, min(cv, sum(valid))),
             maxit = max_iter
           ),
           warning = function(w) {
@@ -127,7 +136,6 @@
         ),
         error = function(e) NULL
       )
-      convergence_warning_count <- length(glmnet_warnings)
       if (!is.null(fit)) {
         pred <- suppressWarnings(as.numeric(stats::predict(fit, newx = as.matrix(W), s = "lambda.min")))
         if (sum(is.finite(pred)) < 8) {
@@ -135,7 +143,7 @@
           if (sum(is.finite(pred_try)) >= sum(is.finite(pred))) pred <- pred_try
         }
         model <- "elasticnet_cv"
-        r2 <- .safe_r2(d_diff, pred, valid)
+        r2 <- .safe_r2(target, pred, valid)
         co <- as.matrix(stats::coef(fit, s = "lambda.min"))
         co <- co[rownames(co) != "(Intercept)", , drop = FALSE]
         if (nrow(co) > 0) {
@@ -145,29 +153,181 @@
           })
         }
       } else {
-        fit_lm <- stats::lm(d_diff ~ ., data = W)
+        fit_lm <- stats::lm(target ~ ., data = W)
         pred <- as.numeric(stats::predict(fit_lm, newdata = W))
         model <- "lm"
-        r2 <- .safe_r2(d_diff, pred, valid)
+        r2 <- .safe_r2(target, pred, valid)
       }
     } else {
-      fit_lm <- stats::lm(d_diff ~ ., data = W)
+      fit_lm <- stats::lm(target ~ ., data = W)
       pred <- as.numeric(stats::predict(fit_lm, newdata = W))
       model <- "lm"
-      r2 <- .safe_r2(d_diff, pred, valid)
+      r2 <- .safe_r2(target, pred, valid)
     }
   }
 
-  shock <- d_diff - pred
-  shock_sd <- stats::sd(shock, na.rm = TRUE)
-  resid_var <- stats::var(shock, na.rm = TRUE)
+  convergence_warning_count <- length(glmnet_warnings)
   convergence_warning_flag <- is.finite(convergence_warning_count) && convergence_warning_count > 0L
-  # Accept deterministic lm fallback quality when glmnet is unavailable.
   quality_pass <- is.finite(r2) &&
-    r2 >= min_r2 &&
     model %in% c("elasticnet_cv", "lm") &&
     is.finite(max_warn) &&
     convergence_warning_count <= max_warn
+
+  list(
+    pred = pred,
+    model = model,
+    r2 = r2,
+    top_predictors = top_predictors,
+    glmnet_warnings = glmnet_warnings,
+    convergence_warning_count = convergence_warning_count,
+    convergence_warning_flag = convergence_warning_flag,
+    quality_pass = quality_pass
+  )
+}
+
+.build_treatment_shock <- function(tcol, merged, w_cols, cfg) {
+  if (!tcol %in% names(merged)) {
+    empty <- rep(NA_real_, nrow(merged))
+    return(list(
+      d_diff = empty,
+      shock = empty,
+      meta = list(treatment = sub("^qend__", "", tcol), treatment_col = tcol, quality_pass = FALSE, message = "missing_treatment_column"),
+      shock_sd = NA_real_,
+      w_cols_selected = character(),
+      diagnostics = list(
+        treatment_col = tcol,
+        treatment = sub("^qend__", "", tcol),
+        selected_controls_count = 0L,
+        controls_total = length(w_cols),
+        residual_variance = NA_real_,
+        fit_r2 = NA_real_,
+        convergence_warning_count = 0L,
+        convergence_warning_flag = FALSE,
+        fallback_used = FALSE,
+        attempts_tried = 0L,
+        selected_l1_ratio = NA_real_,
+        selected_cv = NA_integer_,
+        selected_max_iter = NA_integer_,
+        selected_w_max = NA_integer_,
+        model = "missing_treatment",
+        quality_pass = FALSE,
+        min_r2_threshold = suppressWarnings(as.numeric(.prop_cfg_or(cfg, "SHOCK_MIN_R2", -Inf))),
+        max_convergence_warnings_threshold = suppressWarnings(as.integer(.prop_cfg_or(cfg, "SHOCK_MAX_CONVERGENCE_WARNINGS", 0L)))
+      )
+    ))
+  }
+  design_bundle <- .shock_build_design(tcol, merged, w_cols, cfg)
+  d_target <- design_bundle$target
+  W_full <- design_bundle$design
+
+  w_max_base <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "SHOCK_W_MAX", ncol(W_full))))
+  if (!is.finite(w_max_base) || w_max_base <= 0) w_max_base <- ncol(W_full)
+  candidate_grid <- unique(c(
+    w_max_base,
+    suppressWarnings(as.integer(unlist(.prop_cfg_or(cfg, "SHOCK_RETRY_W_MAX_GRID", integer()))))
+  ))
+  candidate_grid <- candidate_grid[is.finite(candidate_grid) & candidate_grid > 0]
+  if (length(candidate_grid) == 0) candidate_grid <- max(1L, ncol(W_full))
+
+  l1_base <- if (!is.null(cfg$SHOCK_L1_RATIO) && length(cfg$SHOCK_L1_RATIO) > 0) as.numeric(cfg$SHOCK_L1_RATIO)[1] else 0.9
+  cv_base <- if (!is.null(cfg$SHOCK_CV) && length(cfg$SHOCK_CV) > 0) as.integer(cfg$SHOCK_CV)[1] else 3L
+  max_iter_base <- if (!is.null(cfg$SHOCK_MAX_ITER) && length(cfg$SHOCK_MAX_ITER) > 0) as.integer(cfg$SHOCK_MAX_ITER)[1] else 20000L
+  l1_grid <- unique(c(l1_base, suppressWarnings(as.numeric(unlist(.prop_cfg_or(cfg, "SHOCK_RETRY_L1_RATIO_GRID", numeric()))))))
+  cv_grid <- unique(c(cv_base, suppressWarnings(as.integer(unlist(.prop_cfg_or(cfg, "SHOCK_RETRY_CV_GRID", integer()))))))
+  max_iter_grid <- unique(c(max_iter_base, suppressWarnings(as.integer(unlist(.prop_cfg_or(cfg, "SHOCK_RETRY_MAX_ITER_GRID", integer()))))))
+  l1_grid <- l1_grid[is.finite(l1_grid) & l1_grid > 0 & l1_grid <= 1]
+  cv_grid <- cv_grid[is.finite(cv_grid) & cv_grid >= 2]
+  max_iter_grid <- max_iter_grid[is.finite(max_iter_grid) & max_iter_grid >= 1000]
+  if (length(l1_grid) == 0) l1_grid <- 0.9
+  if (length(cv_grid) == 0) cv_grid <- 3L
+  if (length(max_iter_grid) == 0) max_iter_grid <- 20000L
+
+  min_r2 <- suppressWarnings(as.numeric(.prop_cfg_or(cfg, "SHOCK_MIN_R2", -Inf)))
+  if (!is.finite(min_r2)) min_r2 <- -Inf
+  max_warn <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "SHOCK_MAX_CONVERGENCE_WARNINGS", 0L)))
+  if (!is.finite(max_warn)) max_warn <- 0L
+  valid <- !is.na(d_target)
+  seed_base <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "RANDOM_SEED", 42L)))
+  if (!is.finite(seed_base)) seed_base <- 42L
+  seed_local <- abs(seed_base + sum(utf8ToInt(as.character(tcol)))) %% .Machine$integer.max
+  set.seed(seed_local)
+
+  attempt_grid <- expand.grid(
+    w_max = candidate_grid,
+    l1_ratio = l1_grid,
+    cv = cv_grid,
+    max_iter = max_iter_grid,
+    stringsAsFactors = FALSE
+  )
+  attempt_grid <- attempt_grid[order(
+    abs(attempt_grid$w_max - w_max_base),
+    abs(attempt_grid$l1_ratio - l1_base),
+    abs(attempt_grid$cv - cv_base),
+    abs(attempt_grid$max_iter - max_iter_base)
+  ), , drop = FALSE]
+  max_attempts <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "SHOCK_RETRY_MAX_ATTEMPTS", nrow(attempt_grid))))
+  if (!is.finite(max_attempts) || max_attempts <= 0) max_attempts <- nrow(attempt_grid)
+  if (nrow(attempt_grid) > max_attempts) attempt_grid <- attempt_grid[seq_len(max_attempts), , drop = FALSE]
+
+  attempts <- list()
+  for (i in seq_len(nrow(attempt_grid))) {
+    w_max <- as.integer(attempt_grid$w_max[[i]])
+    wsel <- if (ncol(W_full) > w_max) {
+      choose_w_cols_dflmx(W_full, d_target, w_max, as.character(cfg$SHOCK_W_SELECT))
+    } else {
+      names(W_full)
+    }
+    if (length(wsel) == 0) wsel <- names(W_full)
+    W <- W_full[, wsel, drop = FALSE]
+    for (c in names(W)) {
+      W[[c]] <- suppressWarnings(as.numeric(W[[c]]))
+      med <- stats::median(W[[c]], na.rm = TRUE)
+      if (!is.finite(med)) med <- 0
+      W[[c]][is.na(W[[c]])] <- med
+    }
+    fit <- .fit_treatment_shock_attempt(
+      tcol = tcol,
+      target = d_target,
+      W = W,
+      valid = valid,
+      l1_ratio = as.numeric(attempt_grid$l1_ratio[[i]]),
+      cv = as.integer(attempt_grid$cv[[i]]),
+      max_iter = as.integer(attempt_grid$max_iter[[i]]),
+      max_warn = max_warn
+    )
+    fit$wsel <- wsel
+    fit$w_max <- w_max
+    fit$l1_ratio <- as.numeric(attempt_grid$l1_ratio[[i]])
+    fit$cv <- as.integer(attempt_grid$cv[[i]])
+    fit$max_iter <- as.integer(attempt_grid$max_iter[[i]])
+    fit$quality_pass <- isTRUE(fit$quality_pass) && is.finite(fit$r2) && fit$r2 >= min_r2
+    attempts[[length(attempts) + 1L]] <- fit
+  }
+  if (length(attempts) == 0) stop(sprintf("No shock-fit attempts evaluated for %s", tcol))
+  ord <- order(
+    -vapply(attempts, function(x) as.numeric(isTRUE(x$quality_pass)), numeric(1)),
+    -vapply(attempts, function(x) ifelse(is.finite(x$r2), x$r2, -Inf), numeric(1)),
+    vapply(attempts, function(x) x$convergence_warning_count, numeric(1)),
+    vapply(attempts, function(x) x$w_max, numeric(1))
+  )
+  best <- attempts[[ord[[1]]]]
+
+  pred <- best$pred
+  model <- best$model
+  r2 <- best$r2
+  top_predictors <- best$top_predictors
+  glmnet_warnings <- best$glmnet_warnings
+  convergence_warning_count <- best$convergence_warning_count
+  convergence_warning_flag <- best$convergence_warning_flag
+  wsel <- best$wsel
+  w_max <- best$w_max
+  l1_ratio <- best$l1_ratio
+  cv <- best$cv
+  max_iter <- best$max_iter
+  shock <- d_target - pred
+  shock_sd <- stats::sd(shock, na.rm = TRUE)
+  resid_var <- stats::var(shock, na.rm = TRUE)
+  quality_pass <- isTRUE(best$quality_pass)
 
   meta <- list(
     model = model,
@@ -185,16 +345,17 @@
     selected_l1_ratio = l1_ratio,
     selected_cv = cv,
     selected_max_iter = max_iter,
-    selected_w_max = as.integer(cfg$SHOCK_W_MAX),
-    attempts_tried = 1L,
+    selected_w_max = as.integer(w_max),
+    attempts_tried = length(attempts),
     convergence_warning_count = convergence_warning_count,
     convergence_warning_flag = convergence_warning_flag,
     convergence_warning_messages = as.list(glmnet_warnings),
-    fallback_used = FALSE,
+    fallback_used = length(attempts) > 1L && ord[[1]] != 1L,
     residual_variance = resid_var,
     quality_pass = quality_pass,
     top_predictors = top_predictors,
-    n_obs = sum(valid)
+    n_obs = sum(valid),
+    target_transform = as.character(.prop_cfg_or(cfg, "SHOCK_TARGET_TRANSFORM", "diff"))
   )
 
   diag <- list(
@@ -206,23 +367,28 @@
     fit_r2 = r2,
     convergence_warning_count = convergence_warning_count,
     convergence_warning_flag = convergence_warning_flag,
-    fallback_used = FALSE,
-    attempts_tried = 1L,
+    fallback_used = length(attempts) > 1L && ord[[1]] != 1L,
+    attempts_tried = length(attempts),
     selected_l1_ratio = l1_ratio,
     selected_cv = cv,
     selected_max_iter = max_iter,
-    selected_w_max = as.integer(cfg$SHOCK_W_MAX),
+    selected_w_max = as.integer(w_max),
     model = model,
     quality_pass = quality_pass,
     min_r2_threshold = min_r2,
     max_convergence_warnings_threshold = max_warn
   )
 
-  list(d_diff = d_diff, shock = shock, meta = meta, shock_sd = shock_sd, w_cols_selected = wsel, diagnostics = diag)
+  list(d_diff = d_target, shock = shock, meta = meta, shock_sd = shock_sd, w_cols_selected = wsel, diagnostics = diag)
 }
 
 .run_lp <- function(dep, shock, dep_name, horizons, cfg, lp_lags = NULL) {
-  lags <- if (is.null(lp_lags)) as.integer(cfg$LP_LAGS) else as.integer(lp_lags)
+  lags <- if (is.null(lp_lags)) suppressWarnings(as.integer(.prop_cfg_or(cfg, "LP_LAGS", 2L))) else as.integer(lp_lags)
+  if (!is.finite(lags) || lags < 0) lags <- 2L
+  min_obs <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "LP_MIN_OBS", 20L)))
+  hac_lags <- suppressWarnings(as.integer(.prop_cfg_or(cfg, "LP_HAC_LAGS", 1L)))
+  if (!is.finite(min_obs) || min_obs <= 0) min_obs <- 20L
+  if (!is.finite(hac_lags) || hac_lags < 0) hac_lags <- 1L
   rows <- list()
   for (h in sort(unique(as.integer(horizons[horizons >= 0])))) {
     y_lead <- c(dep[(h + 1):length(dep)], rep(NA_real_, h))
@@ -232,10 +398,10 @@
       frame[[sprintf("y_lag%d", i)]] <- c(rep(NA_real_, i), dep[seq_len(max(0, length(dep) - i))])
     }
     frame <- stats::na.omit(frame)
-    if (nrow(frame) < as.integer(cfg$LP_MIN_OBS)) next
+    if (nrow(frame) < min_obs) next
     fit <- stats::lm(y ~ ., data = frame)
     if (requireNamespace("sandwich", quietly = TRUE) && requireNamespace("lmtest", quietly = TRUE)) {
-      vc <- sandwich::NeweyWest(fit, lag = as.integer(cfg$LP_HAC_LAGS), prewhite = FALSE, adjust = TRUE)
+      vc <- sandwich::NeweyWest(fit, lag = hac_lags, prewhite = FALSE, adjust = TRUE)
       ct <- lmtest::coeftest(fit, vcov. = vc)
       b <- as.numeric(ct["shock_t", 1]); se <- as.numeric(ct["shock_t", 2]); p <- as.numeric(ct["shock_t", ncol(ct)])
     } else {
@@ -267,10 +433,12 @@
     cfg_local <- cfg
     cfg_local$SHOCK_W_MAX <- as.integer(tg)
     for (tcol in names(questions)) {
+      if (!tcol %in% names(merged)) next
       built <- .build_treatment_shock(tcol, merged, w_cols, cfg_local)
       shock <- built$shock
       tr_name <- sub("^qend__", "", tcol)
       for (ocol in names(questions[[tcol]])) {
+        if (!ocol %in% names(merged)) next
         dep <- suppressWarnings(as.numeric(merged[[ocol]]))
         lp <- .run_lp(dep, shock, dep_name = ocol, horizons = questions[[tcol]][[ocol]], cfg = cfg_local)
         if (nrow(lp) == 0) next
@@ -307,6 +475,7 @@
   if (length(lag_grid) == 0) return(list())
   shocks <- list()
   for (tcol in names(questions)) {
+    if (!tcol %in% names(merged)) next
     shocks[[tcol]] <- .build_treatment_shock(tcol, merged, w_cols, cfg)$shock
   }
   out <- list()
@@ -314,8 +483,10 @@
     rows <- list()
     for (tcol in names(questions)) {
       shock <- shocks[[tcol]]
+      if (is.null(shock)) next
       tr_name <- sub("^qend__", "", tcol)
       for (ocol in names(questions[[tcol]])) {
+        if (!ocol %in% names(merged)) next
         dep <- suppressWarnings(as.numeric(merged[[ocol]]))
         lp <- .run_lp(dep, shock, dep_name = ocol, horizons = questions[[tcol]][[ocol]], cfg = cfg, lp_lags = lp_lags)
         if (nrow(lp) == 0) next
@@ -327,6 +498,103 @@
     out[[paste0("lags", lp_lags)]] <- if (length(rows) == 0) data.frame() else do.call(rbind, rows)
   }
   out
+}
+
+.rerun_channel_spec_grid <- function(cfg, stacked, panel, merged_base, questions, shocks, lag_grid, k_grid, fdr_alpha) {
+  lag_grid <- sort(unique(as.integer(lag_grid[is.finite(lag_grid) & lag_grid > 0])))
+  k_grid <- sort(unique(as.integer(k_grid[is.finite(k_grid) & k_grid > 0])))
+  out <- list()
+  if (length(lag_grid) == 0 || length(k_grid) == 0) return(out)
+
+  outcomes <- unique(unlist(lapply(questions, names), use.names = FALSE))
+  for (k in k_grid) {
+    bundle <- tryCatch(.extract_factor_bundle(panel, cfg, k_override = k), error = function(e) NULL)
+    if (is.null(bundle)) next
+    factors_alt <- data.frame(quarter_end = panel$quarter_end, bundle$scores, stringsAsFactors = FALSE)
+    factor_cols_alt <- setdiff(names(factors_alt), "quarter_end")
+    keep_cols <- c("quarter_end", unique(c(unlist(lapply(questions, names), use.names = FALSE), names(shocks))))
+    merged_alt <- merge(
+      merged_base[, keep_cols, drop = FALSE],
+      factors_alt,
+      by = "quarter_end",
+      all = FALSE
+    )
+    factors_join <- merge(stacked, factors_alt, by = "quarter_end", all = FALSE)
+    var_attr <- .variance_attribution(factors_join, factor_cols_alt, outcomes)
+    for (lp_lags in lag_grid) {
+      outcome_irf_rows <- list()
+      factor_irf_rows <- list()
+      for (tcol in names(questions)) {
+        shock <- shocks[[tcol]]
+        tr_name <- sub("^qend__", "", tcol)
+        if (is.null(shock)) next
+        for (ocol in names(questions[[tcol]])) {
+          if (!ocol %in% names(merged_alt)) next
+          dep <- suppressWarnings(as.numeric(merged_alt[[ocol]]))
+          lp_o <- .run_lp(dep, shock, dep_name = ocol, horizons = questions[[tcol]][[ocol]], cfg = cfg, lp_lags = lp_lags)
+          if (nrow(lp_o) == 0) next
+          lp_o$treatment <- tr_name
+          lp_o$outcome <- sub("^qend__", "", ocol)
+          lp_o$dependent_kind <- "outcome"
+          outcome_irf_rows[[length(outcome_irf_rows) + 1L]] <- lp_o
+        }
+        for (fcol in factor_cols_alt) {
+          if (!fcol %in% names(merged_alt)) next
+          depf <- suppressWarnings(as.numeric(merged_alt[[fcol]]))
+          lp_f <- .run_lp(depf, shock, dep_name = fcol, horizons = questions[[tcol]][[1]], cfg = cfg, lp_lags = lp_lags)
+          if (nrow(lp_f) == 0) next
+          lp_f$treatment <- tr_name
+          lp_f$outcome <- fcol
+          lp_f$dependent_kind <- "factor"
+          factor_irf_rows[[length(factor_irf_rows) + 1L]] <- lp_f
+        }
+      }
+      irf_o <- if (length(outcome_irf_rows) == 0) data.frame() else do.call(rbind, outcome_irf_rows)
+      irf_f <- if (length(factor_irf_rows) == 0) data.frame() else do.call(rbind, factor_irf_rows)
+      irf_combo <- if (nrow(irf_o) == 0 && nrow(irf_f) == 0) data.frame() else rbind(irf_o, irf_f)
+      channels <- .build_channel_mediation(irf_combo, var_attr)
+      ranked <- .rank_channel_findings(channels, fdr_alpha = fdr_alpha)
+      out[[paste0("k", k, "_lags", lp_lags)]] <- list(
+        k = as.integer(k),
+        lp_lags = as.integer(lp_lags),
+        factor_irf = irf_f,
+        outcome_irf = irf_o,
+        channels = channels,
+        ranked = ranked
+      )
+    }
+  }
+  out
+}
+
+.run_lead_test <- function(dep, shock, horizon, cfg, lead_count = 2L) {
+  lags <- as.integer(cfg$LP_LAGS)
+  lead_count <- suppressWarnings(as.integer(lead_count))
+  if (!is.finite(lead_count) || lead_count <= 0) lead_count <- 2L
+  y_lead <- c(dep[(horizon + 1):length(dep)], rep(NA_real_, horizon))
+  frame <- data.frame(y = y_lead, shock_t = shock)
+  for (i in seq_len(lags)) {
+    frame[[sprintf("shock_lag%d", i)]] <- c(rep(NA_real_, i), shock[seq_len(max(0, length(shock) - i))])
+    frame[[sprintf("y_lag%d", i)]] <- c(rep(NA_real_, i), dep[seq_len(max(0, length(dep) - i))])
+  }
+  for (j in seq_len(lead_count)) {
+    frame[[sprintf("shock_lead%d", j)]] <- c(shock[(j + 1):length(shock)], rep(NA_real_, j))
+  }
+  frame <- stats::na.omit(frame)
+  if (nrow(frame) < as.integer(cfg$LP_MIN_OBS)) return(list(status = "insufficient_obs", n_obs = nrow(frame), p_joint = NA_real_, beta = NA_real_, p_value = NA_real_))
+
+  rhs_base <- c("shock_t", sprintf("shock_lag%d", seq_len(lags)), sprintf("y_lag%d", seq_len(lags)))
+  rhs_base <- rhs_base[rhs_base %in% names(frame)]
+  rhs_full <- c(rhs_base, sprintf("shock_lead%d", seq_len(lead_count)))
+  rhs_full <- rhs_full[rhs_full %in% names(frame)]
+  fit_base <- stats::lm(stats::as.formula(paste("y ~", paste(rhs_base, collapse = " + "))), data = frame)
+  fit_full <- stats::lm(stats::as.formula(paste("y ~", paste(rhs_full, collapse = " + "))), data = frame)
+  cmp <- tryCatch(stats::anova(fit_base, fit_full), error = function(e) NULL)
+  p_joint <- if (!is.null(cmp) && nrow(cmp) >= 2L && "Pr(>F)" %in% names(cmp)) suppressWarnings(as.numeric(cmp[2, "Pr(>F)"])) else NA_real_
+  co <- summary(fit_full)$coefficients
+  beta <- if ("shock_t" %in% rownames(co)) suppressWarnings(as.numeric(co["shock_t", "Estimate"])) else NA_real_
+  p_value <- if ("shock_t" %in% rownames(co)) suppressWarnings(as.numeric(co["shock_t", ncol(co)])) else NA_real_
+  list(status = "ok", n_obs = nrow(frame), p_joint = p_joint, beta = beta, p_value = p_value)
 }
 
 .rank_map_from_irf <- function(df, alpha = 0.10) {
@@ -603,7 +871,11 @@
 }
 
 .write_empty_csv <- function(path, columns, provenance = NULL) {
-  df <- as.data.frame(setNames(vector("list", length(columns)), columns), stringsAsFactors = FALSE)[0, , drop = FALSE]
+  if (length(columns) == 0L) {
+    df <- data.frame(stringsAsFactors = FALSE)[0, , drop = FALSE]
+  } else {
+    df <- as.data.frame(setNames(rep(list(character(0)), length(columns)), columns), stringsAsFactors = FALSE)
+  }
   .prop_write_csv(df, path, provenance = provenance)
 }
 
@@ -672,8 +944,27 @@
   }
   combos <- combos[!duplicated(combos$spec_id), , drop = FALSE]
 
+  shocks_base <- list()
+  for (tcol in names(questions)) shocks_base[[tcol]] <- .build_treatment_shock(tcol, merged, w_cols, cfg)$shock
   spec_lp_cache <- .rerun_spec_grid(cfg, merged, questions, w_cols, lag_grid)
   alpha <- as.numeric(.prop_cfg_or(cfg, "FDR_ALPHA", 0.10))
+  stacked_src <- tryCatch(utils::read.csv(cfg$STACKED_CSV, stringsAsFactors = FALSE), error = function(e) NULL)
+  panel_src <- tryCatch(utils::read.csv(cfg$FACTOR_PANEL_CSV, stringsAsFactors = FALSE), error = function(e) NULL)
+  channel_spec_cache <- if (!is.null(stacked_src) && !is.null(panel_src)) {
+    .rerun_channel_spec_grid(
+      cfg,
+      stacked = stacked_src,
+      panel = panel_src,
+      merged_base = merged,
+      questions = questions,
+      shocks = shocks_base,
+      lag_grid = lag_grid,
+      k_grid = k_grid,
+      fdr_alpha = alpha
+    )
+  } else {
+    list()
+  }
 
   runs_rows <- list()
   stab_rows <- list()
@@ -682,19 +973,20 @@
     k <- as.integer(combos$k_factors[[i]])
     l <- as.integer(combos$lp_lags[[i]])
     spec_id <- as.character(combos$spec_id[[i]])
-    rerun_supported <- is.finite(actual_k) && k == actual_k
+    rerun_supported <- !is.null(channel_spec_cache[[spec_id]])
     spec_key <- paste0("lags", l)
     spec_df <- if (rerun_supported && !is.null(spec_lp_cache[[spec_key]])) spec_lp_cache[[spec_key]] else data.frame()
+    channel_ranked <- if (rerun_supported) channel_spec_cache[[spec_id]]$ranked else data.frame()
     n_rows <- nrow(spec_df)
+    n_channel_rows <- nrow(channel_ranked)
     raw_sig_p05 <- if (n_rows == 0) 0L else sum(is.finite(spec_df$p_value) & spec_df$p_value < 0.05, na.rm = TRUE)
     raw_sig_p10 <- if (n_rows == 0) 0L else sum(is.finite(spec_df$p_value) & spec_df$p_value < 0.10, na.rm = TRUE)
-    q_vals <- if (n_rows == 0) numeric() else bh_fdr_qvalues(spec_df$p_value)
-    fdr_sig_q10 <- if (length(q_vals) == 0) 0L else sum(is.finite(q_vals) & q_vals <= alpha, na.rm = TRUE)
+    fdr_sig_q10 <- if (n_channel_rows == 0) 0L else sum(as.logical(channel_ranked$robust), na.rm = TRUE)
     med_abs_beta <- if (n_rows == 0) NA_real_ else stats::median(abs(spec_df$beta), na.rm = TRUE)
     med_n_obs <- if (n_rows == 0) NA_real_ else stats::median(spec_df$n_obs, na.rm = TRUE)
-    status <- if (rerun_supported) ifelse(n_rows > 0, "ok", "no_rows") else "k_not_rerun"
-    msg <- if (rerun_supported) ifelse(n_rows > 0, "ok", "No outcome LP rows.") else sprintf("Current propagate step holds extracted factor count fixed at k=%s; rerun extract to compare alternative k.", ifelse(is.finite(actual_k), actual_k, "NA"))
-    if (rerun_supported && n_rows > 0) spec_rank_cache[[spec_id]] <- .rank_map_from_irf(spec_df, alpha = alpha)
+    status <- if (rerun_supported) ifelse(n_channel_rows > 0, "ok", "no_channel_rows") else "k_not_rerun"
+    msg <- if (rerun_supported) ifelse(n_channel_rows > 0, "ok", "No channel rows after rerun.") else "Alternate k was not rerun."
+    if (rerun_supported && n_channel_rows > 0) spec_rank_cache[[spec_id]] <- channel_ranked
 
     runs_rows[[length(runs_rows) + 1L]] <- data.frame(
       spec_id = spec_id,
@@ -711,7 +1003,7 @@
       fdr_sig_q10 = fdr_sig_q10,
       median_abs_beta = med_abs_beta,
       median_n_obs = med_n_obs,
-      mean_full_factor_r2 = NA_real_,
+      mean_full_factor_r2 = if (n_channel_rows == 0) NA_real_ else mean(channel_ranked$factor_model_r2, na.rm = TRUE),
       message = msg,
       run_timestamp_utc = run_ts,
       treatment_scope = treatment_scope,
@@ -753,10 +1045,10 @@
       )
       next
     }
-    base_rows <- baseline_ranked$rows
-    cur_rows <- ranked$rows
-    base_key <- as.character(base_rows$key)
-    cur_key <- as.character(cur_rows$key)
+    base_rows <- baseline_ranked
+    cur_rows <- ranked
+    base_key <- paste(base_rows$treatment, base_rows$outcome, base_rows$factor, base_rows$horizon, sep = "||")
+    cur_key <- paste(cur_rows$treatment, cur_rows$outcome, cur_rows$factor, cur_rows$horizon, sep = "||")
     common <- intersect(base_key, cur_key)
     if (length(common) == 0) {
       stab_rows[[length(stab_rows) + 1L]] <- data.frame(
@@ -781,16 +1073,16 @@
     }
     base_sub <- base_rows[match(common, base_key), , drop = FALSE]
     cur_sub <- cur_rows[match(common, cur_key), , drop = FALSE]
-    sign_match <- mean(sign(base_sub$beta) == sign(cur_sub$beta), na.rm = TRUE)
-    base_rank <- unname(baseline_ranked$rank_map[common])
-    cur_rank <- unname(ranked$rank_map[common])
+    sign_match <- mean(sign(base_sub$weighted_channel_estimate) == sign(cur_sub$weighted_channel_estimate), na.rm = TRUE)
+    base_rank <- match(common, base_key)
+    cur_rank <- match(common, cur_key)
     rank_shift <- stats::median(abs(base_rank - cur_rank), na.rm = TRUE)
     top_n <- min(10L, length(common))
     base_top <- common[order(base_rank)][seq_len(top_n)]
     cur_top <- common[order(cur_rank)][seq_len(top_n)]
     priority_match <- length(intersect(base_top, cur_top)) / top_n
-    base_rob <- unname(baseline_ranked$robust_map[common])
-    cur_rob <- unname(ranked$robust_map[common])
+    base_rob <- as.logical(base_sub$robust)
+    cur_rob <- as.logical(cur_sub$robust)
     if (sum(base_rob, na.rm = TRUE) > 0) {
       key_retention <- sum(base_rob & cur_rob, na.rm = TRUE) / sum(base_rob, na.rm = TRUE)
     } else {
@@ -952,34 +1244,54 @@
   max_lead <- as.integer(.prop_cfg_or(cfg, "LEAD_TEST_MAX_ROWS", 30))
   min_lead_obs <- as.integer(.prop_cfg_or(cfg, "LEAD_TEST_MIN_OBS", 60))
   lead_p <- as.numeric(.prop_cfg_or(cfg, "LEAD_TEST_P_THRESHOLD", 0.10))
+  lead_count <- as.integer(.prop_cfg_or(cfg, "LEAD_TEST_N_LEADS", 2))
   if (!is.finite(max_lead) || max_lead <= 0) max_lead <- 30
   if (!is.finite(min_lead_obs) || min_lead_obs <= 0) min_lead_obs <- 60
   if (!is.finite(lead_p) || lead_p <= 0 || lead_p >= 1) lead_p <- 0.10
+  if (!is.finite(lead_count) || lead_count <= 0) lead_count <- 2
   if (nrow(irf_out) == 0) {
     .write_empty_csv(lead_csv, lead_cols, provenance = provenance)
     writeLines(c("# Lead Anticipation Checks", "", "- No rows available."), lead_md)
   } else {
     tmp <- irf_out[order(ifelse(is.finite(irf_out$p_value), irf_out$p_value, Inf)), , drop = FALSE]
     if (nrow(tmp) > max_lead) tmp <- tmp[seq_len(max_lead), , drop = FALSE]
-    lead_status <- ifelse(
-      !is.finite(as.numeric(tmp$n_obs)) | !is.finite(as.numeric(tmp$beta)) | !is.finite(as.numeric(tmp$p_value)),
-      "missing_metrics",
-      ifelse(is.finite(as.numeric(tmp$n_obs)) & as.numeric(tmp$n_obs) >= min_lead_obs, "ok", "insufficient_obs")
-    )
-    lead <- data.frame(
-      treatment = as.character(tmp$treatment),
-      outcome = as.character(tmp$outcome),
-      horizon = as.integer(tmp$horizon),
-      status = as.character(lead_status),
-      n_obs = as.integer(tmp$n_obs),
-      p_joint_leads = as.numeric(tmp$p_value),
-      lead_reject_joint = is.finite(tmp$p_value) & as.numeric(tmp$p_value) < lead_p,
-      beta = as.numeric(tmp$beta),
-      p_value = as.numeric(tmp$p_value),
-      run_timestamp_utc = run_ts,
-      treatment_scope = treatment_scope,
-      stringsAsFactors = FALSE
-    )
+    lead_rows <- list()
+    for (i in seq_len(nrow(tmp))) {
+      tr <- as.character(tmp$treatment[[i]])
+      oc <- as.character(tmp$outcome[[i]])
+      hz <- as.integer(tmp$horizon[[i]])
+      tcol <- paste0("qend__", tr)
+      ocol <- paste0("qend__", oc)
+      shock <- shocks_base[[tcol]]
+      dep <- if (ocol %in% names(merged)) suppressWarnings(as.numeric(merged[[ocol]])) else numeric()
+      res <- if (length(dep) == 0 || is.null(shock)) {
+        list(status = "missing_metrics", n_obs = NA_integer_, p_joint = NA_real_, beta = NA_real_, p_value = NA_real_)
+      } else {
+        .run_lead_test(dep, shock, hz, cfg, lead_count = lead_count)
+      }
+      status <- if (!is.finite(res$n_obs) || !is.finite(res$beta) || !is.finite(res$p_value)) {
+        "missing_metrics"
+      } else if (is.finite(res$n_obs) && res$n_obs < min_lead_obs) {
+        "insufficient_obs"
+      } else {
+        res$status
+      }
+      lead_rows[[length(lead_rows) + 1L]] <- data.frame(
+        treatment = tr,
+        outcome = oc,
+        horizon = hz,
+        status = as.character(status),
+        n_obs = suppressWarnings(as.integer(res$n_obs)),
+        p_joint_leads = suppressWarnings(as.numeric(res$p_joint)),
+        lead_reject_joint = is.finite(res$p_joint) & as.numeric(res$p_joint) < lead_p,
+        beta = suppressWarnings(as.numeric(res$beta)),
+        p_value = suppressWarnings(as.numeric(res$p_value)),
+        run_timestamp_utc = run_ts,
+        treatment_scope = treatment_scope,
+        stringsAsFactors = FALSE
+      )
+    }
+    lead <- do.call(rbind, lead_rows)
     lead <- lead[, lead_cols, drop = FALSE]
     .prop_write_csv(lead, lead_csv, provenance = provenance)
     writeLines(
@@ -988,6 +1300,7 @@
         "",
         sprintf("- Rows: %d", nrow(lead)),
         sprintf("- Reject-any count (p < %.2f): %d", lead_p, sum(lead$lead_reject_joint, na.rm = TRUE)),
+        sprintf("- Leads tested per row: %d", lead_count),
         sprintf("- Treatment scope: %s", treatment_scope)
       ),
       lead_md
