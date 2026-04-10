@@ -25,6 +25,9 @@ empty_iv_checklist_schema <- function() {
   data.frame(
     treatment = character(),
     instrument_candidate = character(),
+    source_factor = character(),
+    source_feature = character(),
+    source_base_series = character(),
     first_stage_strength_check = character(),
     exclusion_check = character(),
     timing_check = character(),
@@ -101,13 +104,30 @@ run_iv_nc_contracts <- function(cfg, irf) {
     if (!is.finite(iv_topk) || iv_topk <= 0) iv_topk <- 5L
     iv_p_max <- suppressWarnings(as.numeric(.ivnc_cfg_or(cfg, "IVNC_DIRECTIONALITY_P_MAX", 0.10)))
     if (!is.finite(iv_p_max) || iv_p_max <= 0) iv_p_max <- 0.10
+    iv_features_per_factor <- suppressWarnings(as.integer(.ivnc_cfg_or(cfg, "IVNC_IV_FEATURES_PER_FACTOR", 3L)))
+    if (!is.finite(iv_features_per_factor) || iv_features_per_factor <= 0) iv_features_per_factor <- 3L
 
     nc_topk <- suppressWarnings(as.integer(.ivnc_cfg_or(cfg, "IVNC_TOPK_NC_PER_OUTCOME", 10L)))
     if (!is.finite(nc_topk) || nc_topk <= 0) nc_topk <- 10L
     nc_p_min <- suppressWarnings(as.numeric(.ivnc_cfg_or(cfg, "IVNC_NC_P_MIN", 0.20)))
     if (!is.finite(nc_p_min) || nc_p_min < 0) nc_p_min <- 0.20
 
-    iv_candidates <- mine_iv_candidates(irf, topk_per_treatment = iv_topk, p_max = iv_p_max)
+    top_loadings <- NULL
+    tl_path <- .ivnc_cfg_or(cfg, "TOP_LOADINGS_CSV", file.path(cfg$OUT_DIR, "top_loadings.csv"))
+    if (!is.null(tl_path) && nzchar(as.character(tl_path)) && file.exists(as.character(tl_path))) {
+      top_loadings <- tryCatch(utils::read.csv(as.character(tl_path), stringsAsFactors = FALSE), error = function(e) NULL)
+    }
+
+    iv_candidates <- mine_iv_candidates(
+      irf,
+      top_loadings = top_loadings,
+      topk_per_treatment = iv_topk,
+      p_max = iv_p_max,
+      features_per_factor = iv_features_per_factor,
+      prefer_observed = isTRUE(.ivnc_cfg_or(cfg, "IVNC_IV_PREFER_OBSERVED", TRUE)),
+      blocklist = as.character(.ivnc_cfg_or(cfg, "IVNC_IV_BLOCKLIST", character())),
+      blocklist_regex = as.character(.ivnc_cfg_or(cfg, "IVNC_IV_BLOCKLIST_REGEX", character()))
+    )
     nc_candidates <- mine_negative_control_candidates(
       irf,
       topk_per_outcome = nc_topk,
@@ -134,6 +154,9 @@ run_iv_nc_contracts <- function(cfg, irf) {
     data.frame(
       treatment = as.character(iv_candidates$treatment),
       instrument_candidate = as.character(iv_candidates$instrument_candidate),
+      source_factor = as.character(iv_candidates$source_factor),
+      source_feature = as.character(iv_candidates$source_feature),
+      source_base_series = as.character(iv_candidates$source_base_series),
       first_stage_strength_check = "pending",
       exclusion_check = "pending",
       timing_check = "pending",
