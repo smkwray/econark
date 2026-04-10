@@ -28,6 +28,8 @@ empty_iv_checklist_schema <- function() {
     source_factor = character(),
     source_feature = character(),
     source_base_series = character(),
+    factor_share = numeric(),
+    max_outcome_abs_corr = numeric(),
     first_stage_strength_check = character(),
     exclusion_check = character(),
     timing_check = character(),
@@ -106,6 +108,12 @@ run_iv_nc_contracts <- function(cfg, irf) {
     if (!is.finite(iv_p_max) || iv_p_max <= 0) iv_p_max <- 0.10
     iv_features_per_factor <- suppressWarnings(as.integer(.ivnc_cfg_or(cfg, "IVNC_IV_FEATURES_PER_FACTOR", 3L)))
     if (!is.finite(iv_features_per_factor) || iv_features_per_factor <= 0) iv_features_per_factor <- 3L
+    iv_min_factor_share <- suppressWarnings(as.numeric(.ivnc_cfg_or(cfg, "IVNC_IV_MIN_FACTOR_SHARE", 0)))
+    if (!is.finite(iv_min_factor_share) || iv_min_factor_share < 0) iv_min_factor_share <- 0
+    iv_max_outcome_abs_corr <- suppressWarnings(as.numeric(.ivnc_cfg_or(cfg, "IVNC_IV_MAX_OUTCOME_ABS_CORR", Inf)))
+    if (!is.finite(iv_max_outcome_abs_corr) || iv_max_outcome_abs_corr < 0) iv_max_outcome_abs_corr <- Inf
+    iv_outcome_corr_min_obs <- suppressWarnings(as.integer(.ivnc_cfg_or(cfg, "IVNC_IV_OUTCOME_CORR_MIN_OBS", 20L)))
+    if (!is.finite(iv_outcome_corr_min_obs) || iv_outcome_corr_min_obs < 3L) iv_outcome_corr_min_obs <- 20L
 
     nc_topk <- suppressWarnings(as.integer(.ivnc_cfg_or(cfg, "IVNC_TOPK_NC_PER_OUTCOME", 10L)))
     if (!is.finite(nc_topk) || nc_topk <= 0) nc_topk <- 10L
@@ -117,14 +125,31 @@ run_iv_nc_contracts <- function(cfg, irf) {
     if (!is.null(tl_path) && nzchar(as.character(tl_path)) && file.exists(as.character(tl_path))) {
       top_loadings <- tryCatch(utils::read.csv(as.character(tl_path), stringsAsFactors = FALSE), error = function(e) NULL)
     }
+    loadings <- NULL
+    ld_path <- .ivnc_cfg_or(cfg, "LOADINGS_CSV", file.path(cfg$OUT_DIR, "loadings.csv"))
+    if (!is.null(ld_path) && nzchar(as.character(ld_path)) && file.exists(as.character(ld_path))) {
+      loadings <- tryCatch(utils::read.csv(as.character(ld_path), stringsAsFactors = FALSE), error = function(e) NULL)
+    }
+    stacked <- NULL
+    st_path <- .ivnc_cfg_or(cfg, "STACKED_CSV", NA_character_)
+    if (!is.null(st_path) && nzchar(as.character(st_path)) && file.exists(as.character(st_path))) {
+      stacked <- tryCatch(utils::read.csv(as.character(st_path), stringsAsFactors = FALSE), error = function(e) NULL)
+    }
 
     iv_candidates <- mine_iv_candidates(
       irf,
       top_loadings = top_loadings,
+      loadings = loadings,
+      stacked = stacked,
+      outcome_cols = as.character(.ivnc_cfg_or(cfg, "OUTCOME_QEND_COLS", character())),
       topk_per_treatment = iv_topk,
       p_max = iv_p_max,
       features_per_factor = iv_features_per_factor,
       prefer_observed = isTRUE(.ivnc_cfg_or(cfg, "IVNC_IV_PREFER_OBSERVED", TRUE)),
+      allow_factor_fallback = isTRUE(.ivnc_cfg_or(cfg, "IVNC_IV_ALLOW_FACTOR_FALLBACK", FALSE)),
+      min_factor_share = iv_min_factor_share,
+      max_outcome_abs_corr = iv_max_outcome_abs_corr,
+      outcome_corr_min_obs = iv_outcome_corr_min_obs,
       blocklist = as.character(.ivnc_cfg_or(cfg, "IVNC_IV_BLOCKLIST", character())),
       blocklist_regex = as.character(.ivnc_cfg_or(cfg, "IVNC_IV_BLOCKLIST_REGEX", character()))
     )
@@ -157,6 +182,8 @@ run_iv_nc_contracts <- function(cfg, irf) {
       source_factor = as.character(iv_candidates$source_factor),
       source_feature = as.character(iv_candidates$source_feature),
       source_base_series = as.character(iv_candidates$source_base_series),
+      factor_share = suppressWarnings(as.numeric(iv_candidates$factor_share)),
+      max_outcome_abs_corr = suppressWarnings(as.numeric(iv_candidates$max_outcome_abs_corr)),
       first_stage_strength_check = "pending",
       exclusion_check = "pending",
       timing_check = "pending",
