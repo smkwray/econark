@@ -89,6 +89,8 @@
   r2 <- NA_real_
   pred <- rep(mean(d_diff, na.rm = TRUE), length(d_diff))
   top_predictors <- list()
+  glmnet_warnings <- character()
+  convergence_warning_count <- 0L
   .safe_r2 <- function(y_true, y_pred, valid_mask) {
     idx <- as.logical(valid_mask)
     idx <- idx & is.finite(y_true) & is.finite(y_pred)
@@ -110,15 +112,22 @@
       set.seed(seed_local)
       nfolds <- max(2L, min(cv, sum(valid)))
       fit <- tryCatch(
-        glmnet::cv.glmnet(
-          x = as.matrix(W[valid, , drop = FALSE]),
-          y = d_diff[valid],
-          alpha = l1_ratio,
-          nfolds = nfolds,
-          maxit = max_iter
+        withCallingHandlers(
+          glmnet::cv.glmnet(
+            x = as.matrix(W[valid, , drop = FALSE]),
+            y = d_diff[valid],
+            alpha = l1_ratio,
+            nfolds = nfolds,
+            maxit = max_iter
+          ),
+          warning = function(w) {
+            glmnet_warnings <<- c(glmnet_warnings, conditionMessage(w))
+            invokeRestart("muffleWarning")
+          }
         ),
         error = function(e) NULL
       )
+      convergence_warning_count <- length(glmnet_warnings)
       if (!is.null(fit)) {
         pred <- suppressWarnings(as.numeric(stats::predict(fit, newx = as.matrix(W), s = "lambda.min")))
         if (sum(is.finite(pred)) < 8) {
@@ -152,8 +161,13 @@
   shock <- d_diff - pred
   shock_sd <- stats::sd(shock, na.rm = TRUE)
   resid_var <- stats::var(shock, na.rm = TRUE)
+  convergence_warning_flag <- is.finite(convergence_warning_count) && convergence_warning_count > 0L
   # Accept deterministic lm fallback quality when glmnet is unavailable.
-  quality_pass <- is.finite(r2) && r2 >= min_r2 && model %in% c("elasticnet_cv", "lm")
+  quality_pass <- is.finite(r2) &&
+    r2 >= min_r2 &&
+    model %in% c("elasticnet_cv", "lm") &&
+    is.finite(max_warn) &&
+    convergence_warning_count <= max_warn
 
   meta <- list(
     model = model,
@@ -173,7 +187,9 @@
     selected_max_iter = max_iter,
     selected_w_max = as.integer(cfg$SHOCK_W_MAX),
     attempts_tried = 1L,
-    convergence_warning_count = 0L,
+    convergence_warning_count = convergence_warning_count,
+    convergence_warning_flag = convergence_warning_flag,
+    convergence_warning_messages = as.list(glmnet_warnings),
     fallback_used = FALSE,
     residual_variance = resid_var,
     quality_pass = quality_pass,
@@ -188,8 +204,8 @@
     controls_total = length(w_cols),
     residual_variance = resid_var,
     fit_r2 = r2,
-    convergence_warning_count = 0L,
-    convergence_warning_flag = FALSE,
+    convergence_warning_count = convergence_warning_count,
+    convergence_warning_flag = convergence_warning_flag,
     fallback_used = FALSE,
     attempts_tried = 1L,
     selected_l1_ratio = l1_ratio,
@@ -241,6 +257,95 @@
   }
   if (length(rows) == 0) return(data.frame())
   do.call(rbind, rows)
+}
+
+.rerun_wspec_grid <- function(cfg, merged, questions, w_cols, tags) {
+  tags <- sort(unique(as.integer(tags[is.finite(tags) & tags > 0])))
+  if (length(tags) == 0) return(data.frame())
+  rows <- list()
+  for (tg in tags) {
+    cfg_local <- cfg
+    cfg_local$SHOCK_W_MAX <- as.integer(tg)
+    for (tcol in names(questions)) {
+      built <- .build_treatment_shock(tcol, merged, w_cols, cfg_local)
+      shock <- built$shock
+      tr_name <- sub("^qend__", "", tcol)
+      for (ocol in names(questions[[tcol]])) {
+        dep <- suppressWarnings(as.numeric(merged[[ocol]]))
+        lp <- .run_lp(dep, shock, dep_name = ocol, horizons = questions[[tcol]][[ocol]], cfg = cfg_local)
+        if (nrow(lp) == 0) next
+        lp$treatment <- tr_name
+        lp$outcome <- sub("^qend__", "", ocol)
+        lp$w_tag <- paste0("w", tg)
+        lp$w_max <- as.integer(tg)
+        rows[[length(rows) + 1L]] <- lp
+      }
+    }
+  }
+  if (length(rows) == 0) return(data.frame())
+  out <- do.call(rbind, rows)
+  out$treatment <- as.character(out$treatment)
+  out$outcome <- as.character(out$outcome)
+  out$w_tag <- as.character(out$w_tag)
+  out$horizon <- suppressWarnings(as.integer(out$horizon))
+  out$beta <- suppressWarnings(as.numeric(out$beta))
+  out$p_value <- suppressWarnings(as.numeric(out$p_value))
+  out
+}
+
+.actual_factor_count <- function(cfg) {
+  path <- as.character(.prop_cfg_or(cfg, "FACTORS_CSV", ""))
+  if (!nzchar(path) || !file.exists(path)) return(suppressWarnings(as.integer(.prop_cfg_or(cfg, "N_FACTORS", NA))))
+  header <- tryCatch(names(utils::read.csv(path, nrows = 1, stringsAsFactors = FALSE)), error = function(e) character())
+  k <- sum(grepl("^F[0-9]+$", header))
+  if (is.finite(k) && k > 0) return(as.integer(k))
+  suppressWarnings(as.integer(.prop_cfg_or(cfg, "N_FACTORS", NA)))
+}
+
+.rerun_spec_grid <- function(cfg, merged, questions, w_cols, lag_grid) {
+  lag_grid <- sort(unique(as.integer(lag_grid[is.finite(lag_grid) & lag_grid > 0])))
+  if (length(lag_grid) == 0) return(list())
+  shocks <- list()
+  for (tcol in names(questions)) {
+    shocks[[tcol]] <- .build_treatment_shock(tcol, merged, w_cols, cfg)$shock
+  }
+  out <- list()
+  for (lp_lags in lag_grid) {
+    rows <- list()
+    for (tcol in names(questions)) {
+      shock <- shocks[[tcol]]
+      tr_name <- sub("^qend__", "", tcol)
+      for (ocol in names(questions[[tcol]])) {
+        dep <- suppressWarnings(as.numeric(merged[[ocol]]))
+        lp <- .run_lp(dep, shock, dep_name = ocol, horizons = questions[[tcol]][[ocol]], cfg = cfg, lp_lags = lp_lags)
+        if (nrow(lp) == 0) next
+        lp$treatment <- tr_name
+        lp$outcome <- sub("^qend__", "", ocol)
+        rows[[length(rows) + 1L]] <- lp
+      }
+    }
+    out[[paste0("lags", lp_lags)]] <- if (length(rows) == 0) data.frame() else do.call(rbind, rows)
+  }
+  out
+}
+
+.rank_map_from_irf <- function(df, alpha = 0.10) {
+  if (nrow(df) == 0) return(list(rows = df, rank_map = numeric(), robust_map = logical()))
+  work <- df
+  work$key <- paste(work$treatment, work$outcome, work$horizon, sep = "||")
+  q_vals <- bh_fdr_qvalues(work$p_value)
+  work$q_value <- q_vals
+  ord <- order(
+    ifelse(is.na(work$q_value), Inf, work$q_value),
+    ifelse(is.na(work$p_value), Inf, work$p_value),
+    -abs(work$beta),
+    work$key
+  )
+  work <- work[ord, , drop = FALSE]
+  work$rank <- seq_len(nrow(work))
+  robust_map <- setNames(!is.na(work$q_value) & work$q_value <= alpha, work$key)
+  rank_map <- setNames(work$rank, work$key)
+  list(rows = work, rank_map = rank_map, robust_map = robust_map)
 }
 
 .variance_attribution <- function(df, factor_cols, outcomes) {
@@ -542,14 +647,18 @@
   irf_out$n_obs <- suppressWarnings(as.numeric(irf_out$n_obs))
   irf_out <- irf_out[is.finite(irf_out$horizon), , drop = FALSE]
 
-  # Spec sensitivity/support outputs.
-  k_grid <- unique(as.integer(.prop_num_vec(cfg$SENS_K_GRID, default = c(suppressWarnings(as.numeric(cfg$N_FACTORS))))))
-  lag_grid <- unique(as.integer(.prop_num_vec(cfg$SENS_LP_LAGS_GRID, default = c(suppressWarnings(as.numeric(cfg$LP_LAGS))))))
+  # Spec sensitivity/support outputs from actual reruns when supported.
+  actual_k <- .actual_factor_count(cfg)
+  k_grid <- unique(as.integer(.prop_num_vec(.prop_cfg_or(cfg, "SENS_K_GRID", c(actual_k)), default = c(actual_k))))
+  lag_grid <- unique(as.integer(.prop_num_vec(
+    .prop_cfg_or(cfg, "SENS_LP_LAGS_GRID", c(suppressWarnings(as.numeric(cfg$LP_LAGS)))),
+    default = c(suppressWarnings(as.numeric(cfg$LP_LAGS)))
+  )))
   k_grid <- k_grid[k_grid > 0]
   lag_grid <- lag_grid[lag_grid > 0]
-  if (length(k_grid) == 0) k_grid <- 4L
+  if (length(k_grid) == 0) k_grid <- if (is.finite(actual_k) && actual_k > 0) actual_k else 4L
   if (length(lag_grid) == 0) lag_grid <- 2L
-  baseline_k <- as.integer(ifelse(is.finite(as.numeric(.prop_cfg_or(cfg, "SENS_BASELINE_K", k_grid[[1]]))), as.numeric(.prop_cfg_or(cfg, "SENS_BASELINE_K", k_grid[[1]])), k_grid[[1]]))
+  baseline_k <- as.integer(ifelse(is.finite(as.numeric(.prop_cfg_or(cfg, "SENS_BASELINE_K", ifelse(is.finite(actual_k), actual_k, k_grid[[1]])))), as.numeric(.prop_cfg_or(cfg, "SENS_BASELINE_K", ifelse(is.finite(actual_k), actual_k, k_grid[[1]]))), k_grid[[1]]))
   baseline_lags <- as.integer(ifelse(is.finite(as.numeric(.prop_cfg_or(cfg, "LP_LAGS", lag_grid[[1]]))), as.numeric(.prop_cfg_or(cfg, "LP_LAGS", lag_grid[[1]])), lag_grid[[1]]))
 
   combos <- expand.grid(k_factors = k_grid, lp_lags = lag_grid, stringsAsFactors = FALSE)
@@ -563,34 +672,37 @@
   }
   combos <- combos[!duplicated(combos$spec_id), , drop = FALSE]
 
-  n_rows <- nrow(irf_out)
-  raw_sig_p05 <- if (n_rows == 0) 0L else sum(is.finite(irf_out$p_value) & irf_out$p_value < 0.05, na.rm = TRUE)
-  raw_sig_p10 <- if (n_rows == 0) 0L else sum(is.finite(irf_out$p_value) & irf_out$p_value < 0.10, na.rm = TRUE)
-  q_vals <- if (n_rows == 0) numeric() else bh_fdr_qvalues(irf_out$p_value)
-  fdr_sig_q10 <- if (length(q_vals) == 0) 0L else sum(is.finite(q_vals) & q_vals <= as.numeric(.prop_cfg_or(cfg, "FDR_ALPHA", 0.10)), na.rm = TRUE)
-  med_abs_beta <- if (n_rows == 0) NA_real_ else stats::median(abs(irf_out$beta), na.rm = TRUE)
-  med_n_obs <- if (n_rows == 0) NA_real_ else stats::median(irf_out$n_obs, na.rm = TRUE)
+  spec_lp_cache <- .rerun_spec_grid(cfg, merged, questions, w_cols, lag_grid)
+  alpha <- as.numeric(.prop_cfg_or(cfg, "FDR_ALPHA", 0.10))
 
   runs_rows <- list()
   stab_rows <- list()
+  spec_rank_cache <- list()
   for (i in seq_len(nrow(combos))) {
     k <- as.integer(combos$k_factors[[i]])
     l <- as.integer(combos$lp_lags[[i]])
     spec_id <- as.character(combos$spec_id[[i]])
-    dist <- abs(k - baseline_k) + abs(l - baseline_lags)
-    sign_match <- max(0, 1 - 0.03 * dist)
-    priority_match <- max(0, 1 - 0.04 * dist)
-    key_retention <- max(0, 1 - 0.05 * dist)
-    rank_shift <- as.numeric(dist)
-    score <- 0.40 * sign_match + 0.30 * priority_match + 0.20 * (1 / (1 + rank_shift)) + 0.10 * key_retention
+    rerun_supported <- is.finite(actual_k) && k == actual_k
+    spec_key <- paste0("lags", l)
+    spec_df <- if (rerun_supported && !is.null(spec_lp_cache[[spec_key]])) spec_lp_cache[[spec_key]] else data.frame()
+    n_rows <- nrow(spec_df)
+    raw_sig_p05 <- if (n_rows == 0) 0L else sum(is.finite(spec_df$p_value) & spec_df$p_value < 0.05, na.rm = TRUE)
+    raw_sig_p10 <- if (n_rows == 0) 0L else sum(is.finite(spec_df$p_value) & spec_df$p_value < 0.10, na.rm = TRUE)
+    q_vals <- if (n_rows == 0) numeric() else bh_fdr_qvalues(spec_df$p_value)
+    fdr_sig_q10 <- if (length(q_vals) == 0) 0L else sum(is.finite(q_vals) & q_vals <= alpha, na.rm = TRUE)
+    med_abs_beta <- if (n_rows == 0) NA_real_ else stats::median(abs(spec_df$beta), na.rm = TRUE)
+    med_n_obs <- if (n_rows == 0) NA_real_ else stats::median(spec_df$n_obs, na.rm = TRUE)
+    status <- if (rerun_supported) ifelse(n_rows > 0, "ok", "no_rows") else "k_not_rerun"
+    msg <- if (rerun_supported) ifelse(n_rows > 0, "ok", "No outcome LP rows.") else sprintf("Current propagate step holds extracted factor count fixed at k=%s; rerun extract to compare alternative k.", ifelse(is.finite(actual_k), actual_k, "NA"))
+    if (rerun_supported && n_rows > 0) spec_rank_cache[[spec_id]] <- .rank_map_from_irf(spec_df, alpha = alpha)
 
     runs_rows[[length(runs_rows) + 1L]] <- data.frame(
       spec_id = spec_id,
       k_factors = k,
       lp_lags = l,
       is_baseline_candidate = isTRUE(combos$is_baseline_candidate[[i]]),
-      k_available = TRUE,
-      status = ifelse(n_rows > 0, "ok", "no_rows"),
+      k_available = rerun_supported,
+      status = status,
       n_outcome_rows = n_rows,
       n_treatments = n_treatments,
       n_outcomes = n_outcomes,
@@ -600,23 +712,103 @@
       median_abs_beta = med_abs_beta,
       median_n_obs = med_n_obs,
       mean_full_factor_r2 = NA_real_,
-      message = ifelse(n_rows > 0, "ok", "No outcome LP rows."),
+      message = msg,
       run_timestamp_utc = run_ts,
       treatment_scope = treatment_scope,
       stringsAsFactors = FALSE
     )
+  }
+  spec_runs <- do.call(rbind, runs_rows)
+  .prop_write_csv(spec_runs, spec_runs_csv, provenance = provenance)
+
+  baseline_spec_id <- paste0("k", baseline_k, "_lags", baseline_lags)
+  if (is.null(spec_rank_cache[[baseline_spec_id]])) {
+    ok_specs <- spec_runs[spec_runs$status == "ok", , drop = FALSE]
+    if (nrow(ok_specs) > 0) baseline_spec_id <- as.character(ok_specs$spec_id[[1]])
+  }
+  baseline_ranked <- spec_rank_cache[[baseline_spec_id]]
+  for (i in seq_len(nrow(combos))) {
+    k <- as.integer(combos$k_factors[[i]])
+    l <- as.integer(combos$lp_lags[[i]])
+    spec_id <- as.character(combos$spec_id[[i]])
+    ranked <- spec_rank_cache[[spec_id]]
+    if (is.null(ranked) || is.null(baseline_ranked)) {
+      stab_rows[[length(stab_rows) + 1L]] <- data.frame(
+        spec_id = spec_id,
+        k_factors = k,
+        lp_lags = l,
+        is_baseline = identical(spec_id, baseline_spec_id),
+        status = ifelse(is.null(ranked), "not_rerun", "baseline_missing"),
+        n_common_rows = 0L,
+        sign_match_rate = NA_real_,
+        priority_match_rate = NA_real_,
+        median_abs_rank_shift = NA_real_,
+        keyfinding_retention_rate = NA_real_,
+        stability_score = NA_real_,
+        run_timestamp_utc = run_ts,
+        treatment_scope = treatment_scope,
+        n_treatments = n_treatments,
+        n_outcomes = n_outcomes,
+        stringsAsFactors = FALSE
+      )
+      next
+    }
+    base_rows <- baseline_ranked$rows
+    cur_rows <- ranked$rows
+    base_key <- as.character(base_rows$key)
+    cur_key <- as.character(cur_rows$key)
+    common <- intersect(base_key, cur_key)
+    if (length(common) == 0) {
+      stab_rows[[length(stab_rows) + 1L]] <- data.frame(
+        spec_id = spec_id,
+        k_factors = k,
+        lp_lags = l,
+        is_baseline = identical(spec_id, baseline_spec_id),
+        status = "insufficient_rows",
+        n_common_rows = 0L,
+        sign_match_rate = NA_real_,
+        priority_match_rate = NA_real_,
+        median_abs_rank_shift = NA_real_,
+        keyfinding_retention_rate = NA_real_,
+        stability_score = NA_real_,
+        run_timestamp_utc = run_ts,
+        treatment_scope = treatment_scope,
+        n_treatments = n_treatments,
+        n_outcomes = n_outcomes,
+        stringsAsFactors = FALSE
+      )
+      next
+    }
+    base_sub <- base_rows[match(common, base_key), , drop = FALSE]
+    cur_sub <- cur_rows[match(common, cur_key), , drop = FALSE]
+    sign_match <- mean(sign(base_sub$beta) == sign(cur_sub$beta), na.rm = TRUE)
+    base_rank <- unname(baseline_ranked$rank_map[common])
+    cur_rank <- unname(ranked$rank_map[common])
+    rank_shift <- stats::median(abs(base_rank - cur_rank), na.rm = TRUE)
+    top_n <- min(10L, length(common))
+    base_top <- common[order(base_rank)][seq_len(top_n)]
+    cur_top <- common[order(cur_rank)][seq_len(top_n)]
+    priority_match <- length(intersect(base_top, cur_top)) / top_n
+    base_rob <- unname(baseline_ranked$robust_map[common])
+    cur_rob <- unname(ranked$robust_map[common])
+    if (sum(base_rob, na.rm = TRUE) > 0) {
+      key_retention <- sum(base_rob & cur_rob, na.rm = TRUE) / sum(base_rob, na.rm = TRUE)
+    } else {
+      key_retention <- ifelse(sum(cur_rob, na.rm = TRUE) == 0, 1, 0)
+    }
+    score <- 0.40 * sign_match + 0.30 * priority_match + 0.20 * (1 / (1 + rank_shift)) + 0.10 * key_retention
     stab_rows[[length(stab_rows) + 1L]] <- data.frame(
       spec_id = spec_id,
       k_factors = k,
       lp_lags = l,
-      is_baseline = isTRUE(combos$is_baseline_candidate[[i]]),
-      status = ifelse(n_rows > 0, "ok", "insufficient_rows"),
-      n_common_rows = n_rows,
-      sign_match_rate = ifelse(n_rows > 0, sign_match, NA_real_),
-      priority_match_rate = ifelse(n_rows > 0, priority_match, NA_real_),
-      median_abs_rank_shift = ifelse(n_rows > 0, rank_shift, NA_real_),
-      keyfinding_retention_rate = ifelse(n_rows > 0, key_retention, NA_real_),
-      stability_score = ifelse(n_rows > 0, score, NA_real_),
+      is_baseline = identical(spec_id, baseline_spec_id),
+      status = "ok",
+      n_common_rows = length(common),
+      sign_match_rate = sign_match,
+      priority_match_rate = priority_match,
+      median_abs_rank_shift = rank_shift,
+      keyfinding_retention_rate = key_retention,
+      stability_score = score,
       run_timestamp_utc = run_ts,
       treatment_scope = treatment_scope,
       n_treatments = n_treatments,
@@ -624,9 +816,7 @@
       stringsAsFactors = FALSE
     )
   }
-  spec_runs <- do.call(rbind, runs_rows)
   spec_stability <- do.call(rbind, stab_rows)
-  .prop_write_csv(spec_runs, spec_runs_csv, provenance = provenance)
   .prop_write_csv(spec_stability, spec_summary_csv, provenance = provenance)
   pick <- spec_stability[is.finite(spec_stability$stability_score), , drop = FALSE]
   if (nrow(pick) > 0) {
@@ -644,11 +834,12 @@
   selected <- if (nrow(pick) == 0) list(spec_id = NA_character_, k_factors = NA_integer_, lp_lags = as.integer(.prop_cfg_or(cfg, "LP_LAGS", 2))) else list(spec_id = as.character(pick$spec_id[[1]]), k_factors = as.integer(pick$k_factors[[1]]), lp_lags = as.integer(pick$lp_lags[[1]]), stability_score = as.numeric(pick$stability_score[[1]]))
   write_json(spec_recommended_json, list(selection_rule = "stability_first_reduced_form", selected_spec = selected, run_timestamp_utc = run_ts, treatment_scope = treatment_scope, n_treatments = n_treatments, n_outcomes = n_outcomes))
 
-  # W-spec shift summary (contract scaffold from current IRF rows).
+  # W-spec shift summary from actual reruns over the shock-control cap grid.
   tags_raw <- .prop_num_vec(.prop_cfg_or(cfg, "DASS_W_SPEC_COMPARE", c(100, 200, 300)), default = c(100, 200, 300))
   tags <- sort(unique(as.integer(tags_raw[tags_raw > 0])))
   if (length(tags) == 0) tags <- c(100L, 200L, 300L)
   base_tag_num <- as.integer(ifelse(is.finite(as.numeric(.prop_cfg_or(cfg, "DASS_W_SPEC_BASELINE", 200))), as.numeric(.prop_cfg_or(cfg, "DASS_W_SPEC_BASELINE", 200)), tags[[1]]))
+  if (!base_tag_num %in% tags) tags <- sort(unique(c(tags, base_tag_num)))
   base_tag <- paste0("w", ifelse(base_tag_num > 0, base_tag_num, tags[[1]]))
   p_thresh <- as.numeric(.prop_cfg_or(cfg, "DASS_W_SPEC_P_THRESHOLD", 0.10))
   if (!is.finite(p_thresh) || p_thresh <= 0 || p_thresh >= 1) p_thresh <- 0.10
@@ -663,13 +854,33 @@
     tag <- paste0("w", tg)
     wspec_cols <- c(wspec_cols, paste0("estimate_sd_", tag), paste0("p_", tag), paste0("w_max_", tag))
   }
-  if (nrow(irf_out) == 0) {
+  wspec_runs <- .rerun_wspec_grid(cfg, merged, questions, w_cols, tags)
+  if (nrow(irf_out) == 0 || nrow(wspec_runs) == 0) {
     .write_empty_csv(wspec_csv, wspec_cols, provenance = provenance)
   } else {
     rows <- list()
     for (i in seq_len(nrow(irf_out))) {
-      beta <- suppressWarnings(as.numeric(irf_out$beta[[i]]))
-      p0 <- suppressWarnings(as.numeric(irf_out$p_value[[i]]))
+      tr <- as.character(irf_out$treatment[[i]])
+      oc <- as.character(irf_out$outcome[[i]])
+      hz <- as.integer(irf_out$horizon[[i]])
+      sub <- wspec_runs[
+        wspec_runs$treatment == tr &
+        wspec_runs$outcome == oc &
+        wspec_runs$horizon == hz,
+        ,
+        drop = FALSE
+      ]
+      beta <- NA_real_
+      p0 <- NA_real_
+      if (nrow(sub) > 0 && any(sub$w_tag == base_tag)) {
+        base_row <- sub[sub$w_tag == base_tag, , drop = FALSE][1, , drop = FALSE]
+        beta <- suppressWarnings(as.numeric(base_row$beta[[1]]))
+        p0 <- suppressWarnings(as.numeric(base_row$p_value[[1]]))
+      }
+      if (!is.finite(beta) || !is.finite(p0)) {
+        beta <- suppressWarnings(as.numeric(irf_out$beta[[i]]))
+        p0 <- suppressWarnings(as.numeric(irf_out$p_value[[i]]))
+      }
       if (!is.finite(beta)) beta <- NA_real_
       if (!is.finite(p0)) p0 <- NA_real_
       out_row <- data.frame(
@@ -696,25 +907,28 @@
         n_treatments = n_treatments,
         stringsAsFactors = FALSE
       )
-      effects <- numeric()
-      pvals <- numeric()
+      effects <- rep(NA_real_, length(tags))
+      pvals <- rep(NA_real_, length(tags))
+      names(effects) <- paste0("w", tags)
+      names(pvals) <- paste0("w", tags)
       deltas <- numeric()
       for (tg in tags) {
         tag <- paste0("w", tg)
-        base_num <- as.numeric(gsub("^w", "", base_tag))
-        if (!is.finite(base_num) || base_num <= 0) base_num <- tags[[1]]
-        delta_scale <- abs(tg - base_num) / base_num
-        sign_beta <- ifelse(is.finite(beta) && beta != 0, sign(beta), 1)
-        est_t <- ifelse(is.finite(beta), beta + sign_beta * 0.05 * delta_scale, NA_real_)
-        p_t <- ifelse(is.finite(p0), min(1, p0 + 0.02 * delta_scale), NA_real_)
+        sub_t <- sub[sub$w_tag == tag, , drop = FALSE]
+        est_t <- if (nrow(sub_t) > 0) suppressWarnings(as.numeric(sub_t$beta[[1]])) else NA_real_
+        p_t <- if (nrow(sub_t) > 0) suppressWarnings(as.numeric(sub_t$p_value[[1]])) else NA_real_
         out_row[[paste0("estimate_sd_", tag)]] <- est_t
         out_row[[paste0("p_", tag)]] <- p_t
         out_row[[paste0("w_max_", tag)]] <- as.numeric(tg)
-        if (is.finite(est_t)) effects <- c(effects, est_t)
-        if (is.finite(p_t)) pvals <- c(pvals, p_t)
+        effects[[tag]] <- est_t
+        pvals[[tag]] <- p_t
         if (is.finite(beta) && is.finite(est_t) && tag != base_tag) deltas <- c(deltas, abs(est_t - beta))
       }
+      present_tags <- names(effects)[is.finite(effects) | is.finite(pvals)]
       sgn <- sign(effects[effects != 0 & is.finite(effects)])
+      out_row$spec_tags_present <- if (length(present_tags) == 0) "" else paste(present_tags, collapse = ",")
+      out_row$n_specs_present <- length(present_tags)
+      out_row$all_specs_present <- identical(sort(present_tags), sort(paste0("w", tags)))
       out_row$raw_sig_p10_count <- sum(pvals < p_thresh, na.rm = TRUE)
       out_row$raw_sig_p05_count <- sum(pvals < 0.05, na.rm = TRUE)
       out_row$sign_flip_any <- length(unique(sgn)) >= 2

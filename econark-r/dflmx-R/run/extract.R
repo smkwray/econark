@@ -56,14 +56,16 @@ run_extract <- function(cfg, dry_run = FALSE) {
     ord <- rownames(loadings)[ord_idx[seq_len(min(top_n, length(ord_idx)))]]
     for (i in seq_along(ord)) {
       col <- ord[[i]]
+      row_idx <- match(col, rownames(loadings))
+      val <- if (is.finite(row_idx)) as.numeric(loadings[row_idx, f]) else NA_real_
       top_rows[[length(top_rows) + 1]] <- data.frame(
         factor = f,
         rank = i,
         feature = col,
         base_series = base_series_from_lag(col),
-        loading = as.numeric(loadings[[f]][col]),
-        abs_loading = abs(as.numeric(loadings[[f]][col])),
-        direction = ifelse(loadings[[f]][col] >= 0, "positive", "negative"),
+        loading = val,
+        abs_loading = abs(val),
+        direction = ifelse(is.finite(val) && val >= 0, "positive", "negative"),
         stringsAsFactors = FALSE
       )
     }

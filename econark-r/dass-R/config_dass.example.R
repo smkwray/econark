@@ -27,6 +27,18 @@ SERIES_SPECS <- list(
 
 PREP_INCLUDE_QUARTER_END <- c("gdp_annual", "gdp_quarterly")
 
+# Optional broad-universe controls from a raw-series directory.
+# When enabled, DASS prep scans the directory for simple `date,value` CSV files,
+# infers names/frequencies, and appends them to the manual SERIES_SPECS universe.
+AUTO_SERIES_DIR <- NULL
+AUTO_SERIES_INCLUDE_REGEX <- "\\.csv$"
+AUTO_SERIES_EXCLUDE_REGEX <- NULL
+AUTO_SERIES_NAME_MODE <- "auto"
+AUTO_SERIES_SKIP_EXISTING <- TRUE
+AUTO_SERIES_REQUIRE_DATE_VALUE <- TRUE
+AUTO_SERIES_FREQ_ALLOW <- c("d", "w", "m", "q")
+AUTO_SERIES_MIN_OBS <- 4
+
 DESIGN_OUT_DIR <- file.path(OUT_DIR, "design")
 LP_OUT_DIR <- file.path(OUT_DIR, "lp")
 DML_OUT_DIR <- file.path(OUT_DIR, "dml")
