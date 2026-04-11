@@ -5,9 +5,10 @@ import csv
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
+import pandas as pd
 
 from common import cfg
 
@@ -528,6 +529,7 @@ def mine_candidates(
     top_k: int = 5,
     row_id_col: str | None = None,
     treatment_fragility: dict[str, dict[str, bool]] | None = None,
+    candidate_metadata: Mapping[tuple[str, str], Mapping[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     treatments = [str(name) for name in treatment_series_names]
     candidates = [str(name) for name in candidate_series_names]
@@ -553,6 +555,9 @@ def mine_candidates(
         baseline_wspec_fail = bool(treatment_frag.get("baseline_wspec_fail", False))
         baseline_fragility_fail = bool(baseline_lead_fail or baseline_episode_fail or baseline_wspec_fail)
         for candidate_name in candidates:
+            meta = dict((candidate_metadata or {}).get((treatment_name, candidate_name), {}))
+            if candidate_metadata is not None and not meta:
+                continue
             if candidate_name not in rows[0]:
                 continue
             candidate = _series_from_rows(rows, candidate_name)
@@ -622,6 +627,15 @@ def mine_candidates(
                         "sample_end": sample_end,
                         "pass_feasibility": pass_feasibility,
                         "pass_directionality": directionality_ok,
+                        "source": str(meta.get("source", "")),
+                        "source_factor": str(meta.get("source_factor", "")),
+                        "source_feature": str(meta.get("source_feature", "")),
+                        "source_base_series": str(meta.get("source_base_series", "")),
+                        "loading": float(meta.get("loading", float("nan"))),
+                        "abs_loading": float(meta.get("abs_loading", float("nan"))),
+                        "loading_direction": str(meta.get("loading_direction", "")),
+                        "factor_share": float(meta.get("factor_share", float("nan"))),
+                        "max_outcome_abs_corr": float(meta.get("max_outcome_abs_corr", float("nan"))),
                         "first_stage_t": t_stat,
                         "first_stage_f_proxy": f_proxy,
                         "partial_r2": pr2,
@@ -709,6 +723,12 @@ def mine_candidates(
                 "run_id": str(best["run_id"]),
                 "treatment": treatment_name,
                 "candidate_series": candidate_name,
+                "source": str(best.get("source", "")),
+                "source_factor": str(best.get("source_factor", "")),
+                "source_feature": str(best.get("source_feature", "")),
+                "source_base_series": str(best.get("source_base_series", "")),
+                "factor_share": float(best.get("factor_share", float("nan"))),
+                "max_outcome_abs_corr": float(best.get("max_outcome_abs_corr", float("nan"))),
                 "feasibility_ok": feasibility_ok,
                 "directionality_ok": directionality_ok,
                 "forward_chain_ok": forward_chain_ok,
@@ -746,6 +766,263 @@ def _normalize_list(values: Sequence[str] | str | None) -> list[str]:
             out.extend([part.strip() for part in str(item).split(",") if part.strip()])
         return out
     return [part.strip() for part in str(values).split(",") if part.strip()]
+
+
+def _normalize_top_loadings(top_loadings: pd.DataFrame | None) -> pd.DataFrame:
+    if top_loadings is None or top_loadings.empty:
+        return pd.DataFrame()
+    out = top_loadings.copy()
+    required = {"factor", "feature"}
+    if not required.issubset(out.columns):
+        return pd.DataFrame()
+    out["factor"] = out["factor"].astype(str)
+    out["feature"] = out["feature"].astype(str)
+    if "base_series" not in out.columns:
+        out["base_series"] = out["feature"]
+    out["base_series"] = out["base_series"].astype(str)
+    if "loading" not in out.columns:
+        out["loading"] = np.nan
+    out["loading"] = pd.to_numeric(out["loading"], errors="coerce")
+    if "abs_loading" not in out.columns:
+        out["abs_loading"] = out["loading"].abs()
+    out["abs_loading"] = pd.to_numeric(out["abs_loading"], errors="coerce")
+    if "direction" not in out.columns:
+        out["direction"] = np.where(out["loading"].fillna(0.0) >= 0.0, "positive", "negative")
+    if "rank" not in out.columns:
+        out["rank"] = np.arange(1, len(out) + 1)
+    rank_values = pd.to_numeric(out["rank"], errors="coerce")
+    rank_fallback = pd.Series(np.arange(1, len(out) + 1), index=out.index, dtype=float)
+    out["rank"] = rank_values.where(rank_values.notna(), rank_fallback).astype(int)
+    return out.sort_values(["factor", "rank", "abs_loading"], ascending=[True, True, False]).reset_index(drop=True)
+
+
+def _normalize_loadings_matrix_iv(loadings: pd.DataFrame | None) -> pd.DataFrame:
+    if loadings is None or loadings.empty or "feature" not in loadings.columns:
+        return pd.DataFrame()
+    out = loadings.copy()
+    out["feature"] = out["feature"].astype(str)
+    for col in [c for c in out.columns if c != "feature"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
+
+
+def _match_any_regex_iv(text: str, patterns: Sequence[str]) -> bool:
+    if not patterns:
+        return False
+    import re
+    for pattern in patterns:
+        p = str(pattern).strip()
+        if not p:
+            continue
+        if re.search(p, text):
+            return True
+    return False
+
+
+def _feature_factor_share_iv(feature: str, factor_name: str, loadings: pd.DataFrame) -> float:
+    if loadings.empty or factor_name not in loadings.columns:
+        return float("nan")
+    row = loadings.loc[loadings["feature"].astype(str) == str(feature)]
+    if row.empty:
+        return float("nan")
+    fac_cols = [c for c in loadings.columns if c != "feature"]
+    vals = pd.to_numeric(row.iloc[0][fac_cols], errors="coerce").to_numpy(dtype=float)
+    denom = float(np.nansum(np.abs(vals)))
+    if not np.isfinite(denom) or denom <= 0.0:
+        return float("nan")
+    numer = pd.to_numeric(row.iloc[0][factor_name], errors="coerce")
+    numer = float(numer) if pd.notna(numer) else float("nan")
+    if not np.isfinite(numer):
+        return float("nan")
+    return float(abs(numer) / denom)
+
+
+def _candidate_outcome_corr_iv(
+    feature: str,
+    stacked: pd.DataFrame | None,
+    outcome_cols: Sequence[str],
+    min_obs: int = 20,
+) -> float:
+    if stacked is None or stacked.empty or str(feature) not in stacked.columns:
+        return float("nan")
+    min_obs = max(3, int(min_obs))
+    x = pd.to_numeric(stacked[str(feature)], errors="coerce").to_numpy(dtype=float)
+    vals: list[float] = []
+    for outcome_col in outcome_cols:
+        if str(outcome_col) not in stacked.columns:
+            continue
+        y = pd.to_numeric(stacked[str(outcome_col)], errors="coerce").to_numpy(dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        if int(np.count_nonzero(mask)) < min_obs:
+            continue
+        corr = np.corrcoef(x[mask], y[mask])[0, 1]
+        if np.isfinite(corr):
+            vals.append(float(abs(corr)))
+    if not vals:
+        return float("nan")
+    return float(max(vals))
+
+
+def build_candidate_metadata_from_factor_loadings(
+    irf: pd.DataFrame | None,
+    *,
+    top_loadings: pd.DataFrame | None = None,
+    loadings: pd.DataFrame | None = None,
+    stacked: pd.DataFrame | None = None,
+    outcome_cols: Sequence[str] = (),
+    topk_per_treatment: int = 5,
+    p_max: float = 0.10,
+    features_per_factor: int = 3,
+    prefer_observed: bool = True,
+    allow_factor_fallback: bool = False,
+    min_factor_share: float = 0.0,
+    max_outcome_abs_corr: float = float("inf"),
+    outcome_corr_min_obs: int = 20,
+    blocklist: Sequence[str] = (),
+    blocklist_regex: Sequence[str] = (),
+) -> tuple[list[str], dict[tuple[str, str], dict[str, object]]]:
+    if irf is None or irf.empty:
+        return [], {}
+    required = {"dependent_kind", "treatment", "outcome", "horizon", "beta", "se", "p"}
+    alt_required = {"dependent_kind", "treatment", "outcome", "horizon", "beta", "se", "p_value"}
+    p_col = "p" if required.issubset(irf.columns) else ("p_value" if alt_required.issubset(irf.columns) else None)
+    if p_col is None:
+        return [], {}
+
+    cand = irf.loc[irf["dependent_kind"].astype(str) == "factor"].copy()
+    if cand.empty:
+        return [], {}
+    cand["beta"] = pd.to_numeric(cand["beta"], errors="coerce")
+    cand["se"] = pd.to_numeric(cand["se"], errors="coerce")
+    cand[p_col] = pd.to_numeric(cand[p_col], errors="coerce")
+    cand["horizon"] = pd.to_numeric(cand["horizon"], errors="coerce").fillna(0).astype(int)
+    cand = cand.loc[np.isfinite(cand[p_col]) & (cand[p_col] <= float(p_max))].copy()
+    if cand.empty:
+        return [], {}
+    cand["factor_score"] = cand["beta"].abs() / cand["se"].abs().clip(lower=1e-8)
+    cand["factor"] = cand["outcome"].astype(str)
+
+    top_loadings_norm = _normalize_top_loadings(top_loadings)
+    loadings_norm = _normalize_loadings_matrix_iv(loadings)
+    use_observed = bool(prefer_observed) and not top_loadings_norm.empty
+    topn = max(1, int(features_per_factor))
+    min_factor_share = max(0.0, float(min_factor_share))
+    blocklist = [str(x) for x in blocklist if str(x).strip()]
+    blocklist_regex = [str(x) for x in blocklist_regex if str(x).strip()]
+
+    all_treatments = set(irf["treatment"].astype(str).tolist())
+    all_outcomes = set(irf.loc[irf["dependent_kind"].astype(str) == "outcome", "outcome"].astype(str).tolist())
+    excluded_series = all_treatments | all_outcomes
+
+    metadata_by_pair: dict[tuple[str, str], dict[str, object]] = {}
+    ordered_candidates: list[str] = []
+    topk = max(1, int(topk_per_treatment))
+
+    for treatment_name in sorted(cand["treatment"].astype(str).unique().tolist()):
+        sub = cand.loc[cand["treatment"].astype(str) == treatment_name].copy()
+        cand_rows: list[dict[str, object]] = []
+        for _, row in sub.iterrows():
+            factor_name = str(row["factor"])
+            if use_observed:
+                loads = top_loadings_norm.loc[top_loadings_norm["factor"] == factor_name].copy()
+                if not loads.empty:
+                    loads = loads.head(topn)
+                    keep_rows = []
+                    for _, ld in loads.iterrows():
+                        feature_name = str(ld["feature"])
+                        base_series = str(ld["base_series"])
+                        blocked = (
+                            feature_name in excluded_series
+                            or base_series in excluded_series
+                            or feature_name in blocklist
+                            or base_series in blocklist
+                            or _match_any_regex_iv(feature_name, blocklist_regex)
+                            or _match_any_regex_iv(base_series, blocklist_regex)
+                        )
+                        if blocked:
+                            continue
+                        factor_share = _feature_factor_share_iv(feature_name, factor_name, loadings_norm)
+                        max_corr = _candidate_outcome_corr_iv(
+                            feature_name,
+                            stacked,
+                            outcome_cols,
+                            min_obs=outcome_corr_min_obs,
+                        )
+                        if min_factor_share > 0.0 and (not np.isfinite(factor_share) or factor_share < min_factor_share):
+                            continue
+                        if np.isfinite(max_outcome_abs_corr) and (not np.isfinite(max_corr) or max_corr > max_outcome_abs_corr):
+                            continue
+                        keep_rows.append(
+                            {
+                                "candidate_series": feature_name,
+                                "source_factor": factor_name,
+                                "source_feature": feature_name,
+                                "source_base_series": base_series,
+                                "loading": float(pd.to_numeric(ld["loading"], errors="coerce")) if pd.notna(ld["loading"]) else float("nan"),
+                                "abs_loading": float(pd.to_numeric(ld["abs_loading"], errors="coerce")) if pd.notna(ld["abs_loading"]) else float("nan"),
+                                "loading_direction": str(ld["direction"]),
+                                "factor_share": float(factor_share) if np.isfinite(factor_share) else float("nan"),
+                                "max_outcome_abs_corr": float(max_corr) if np.isfinite(max_corr) else float("nan"),
+                                "horizon": int(row["horizon"]),
+                                "beta": float(row["beta"]),
+                                "se": float(row["se"]),
+                                "p_value": float(row[p_col]),
+                                "score": float(row["factor_score"]) * max(float(pd.to_numeric(ld["abs_loading"], errors="coerce") or 0.0), 1e-8),
+                                "source": "factor_loading_map",
+                            }
+                        )
+                    if keep_rows:
+                        cand_rows.extend(keep_rows)
+                        continue
+            if not bool(allow_factor_fallback):
+                continue
+            cand_rows.append(
+                {
+                    "candidate_series": factor_name,
+                    "source_factor": factor_name,
+                    "source_feature": factor_name,
+                    "source_base_series": factor_name,
+                    "loading": float("nan"),
+                    "abs_loading": float("nan"),
+                    "loading_direction": "",
+                    "factor_share": float("nan"),
+                    "max_outcome_abs_corr": float("nan"),
+                    "horizon": int(row["horizon"]),
+                    "beta": float(row["beta"]),
+                    "se": float(row["se"]),
+                    "p_value": float(row[p_col]),
+                    "score": float(row["factor_score"]),
+                    "source": "factor_irf_screen",
+                }
+            )
+        if not cand_rows:
+            continue
+        sub_out = pd.DataFrame(cand_rows)
+        sub_out = sub_out.sort_values(["p_value", "score", "abs_loading"], ascending=[True, False, False], na_position="last")
+        sub_out = sub_out.drop_duplicates(subset=["candidate_series"], keep="first").head(topk)
+        for _, row in sub_out.iterrows():
+            candidate_name = str(row["candidate_series"])
+            ordered_candidates.append(candidate_name)
+            metadata_by_pair[(treatment_name, candidate_name)] = {
+                "source": str(row.get("source", "")),
+                "source_factor": str(row.get("source_factor", "")),
+                "source_feature": str(row.get("source_feature", "")),
+                "source_base_series": str(row.get("source_base_series", "")),
+                "loading": float(row.get("loading", float("nan"))),
+                "abs_loading": float(row.get("abs_loading", float("nan"))),
+                "loading_direction": str(row.get("loading_direction", "")),
+                "factor_share": float(row.get("factor_share", float("nan"))),
+                "max_outcome_abs_corr": float(row.get("max_outcome_abs_corr", float("nan"))),
+            }
+
+    deduped_candidates: list[str] = []
+    seen: set[str] = set()
+    for name in ordered_candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped_candidates.append(name)
+    return deduped_candidates, metadata_by_pair
 
 
 def _parse_arguments() -> argparse.Namespace:
@@ -854,6 +1131,15 @@ def main() -> int:
         "sample_end",
         "pass_feasibility",
         "pass_directionality",
+        "source",
+        "source_factor",
+        "source_feature",
+        "source_base_series",
+        "loading",
+        "abs_loading",
+        "loading_direction",
+        "factor_share",
+        "max_outcome_abs_corr",
         "first_stage_t",
         "first_stage_f_proxy",
         "partial_r2",
@@ -877,6 +1163,12 @@ def main() -> int:
         "run_id",
         "treatment",
         "candidate_series",
+        "source",
+        "source_factor",
+        "source_feature",
+        "source_base_series",
+        "factor_share",
+        "max_outcome_abs_corr",
         "feasibility_ok",
         "directionality_ok",
         "forward_chain_ok",

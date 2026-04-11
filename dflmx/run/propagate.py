@@ -99,6 +99,7 @@ from design import build_shock_residual as dass_build_shock_residual  # noqa: E4
 from design import choose_w_cols as dass_choose_w_cols  # noqa: E402
 from sklearn.exceptions import ConvergenceWarning
 from iv_candidate_miner import _register_transforms as iv_register_transforms
+from iv_candidate_miner import build_candidate_metadata_from_factor_loadings
 from iv_candidate_miner import mine_candidates
 from iv_nc_contracts import MANIFEST_COLUMNS, build_confirmatory_contract_rows
 from negative_control_miner import mine_negative_control_candidates
@@ -4108,6 +4109,7 @@ def run_iv_nc_discovery_artifacts(
     merged: pd.DataFrame,
     question_map: dict[str, dict[str, list[int]]],
     factor_cols: list[str],
+    irf: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     iv_headers = [
         "run_id",
@@ -4115,6 +4117,15 @@ def run_iv_nc_discovery_artifacts(
         "code_sha",
         "treatment",
         "candidate_series",
+        "source",
+        "source_factor",
+        "source_feature",
+        "source_base_series",
+        "loading",
+        "abs_loading",
+        "loading_direction",
+        "factor_share",
+        "max_outcome_abs_corr",
         "transform",
         "lag",
         "sample_start",
@@ -4143,6 +4154,12 @@ def run_iv_nc_discovery_artifacts(
         "run_id",
         "treatment",
         "candidate_series",
+        "source",
+        "source_factor",
+        "source_feature",
+        "source_base_series",
+        "factor_share",
+        "max_outcome_abs_corr",
         "feasibility_ok",
         "directionality_ok",
         "forward_chain_ok",
@@ -4288,16 +4305,52 @@ def run_iv_nc_discovery_artifacts(
 
     all_treat_cols = sorted(question_map.keys())
     all_outcome_cols = sorted({o for omap in question_map.values() for o in omap.keys()})
+    top_loadings = pd.DataFrame()
+    top_loadings_path = Path(getattr(cfg, "TOP_LOADINGS_CSV", ""))
+    if top_loadings_path.exists():
+        try:
+            top_loadings = pd.read_csv(top_loadings_path)
+        except Exception as exc:
+            print(f"[propagate] warning: unable to load top loadings from {top_loadings_path}: {exc}")
+    loadings = pd.DataFrame()
+    loadings_path = Path(getattr(cfg, "LOADINGS_CSV", ""))
+    if loadings_path.exists():
+        try:
+            loadings = pd.read_csv(loadings_path)
+        except Exception as exc:
+            print(f"[propagate] warning: unable to load loadings from {loadings_path}: {exc}")
     iv_candidate_cap = int(getattr(cfg, "IVNC_MAX_CANDIDATE_SERIES", 120))
-    iv_candidate_cols = _build_iv_candidate_series(
-        merged=merged,
-        treatment_cols=all_treat_cols,
+    iv_candidate_cols, candidate_metadata = build_candidate_metadata_from_factor_loadings(
+        irf=irf,
+        top_loadings=top_loadings,
+        loadings=loadings,
+        stacked=merged,
         outcome_cols=all_outcome_cols,
-        factor_cols=factor_cols,
-        max_candidate_series=iv_candidate_cap,
+        topk_per_treatment=int(getattr(cfg, "IVNC_TOPK_IV_PER_TREATMENT", 5)),
+        p_max=float(getattr(cfg, "IVNC_DIRECTIONALITY_P_MAX", 0.10)),
+        features_per_factor=int(getattr(cfg, "IVNC_IV_FEATURES_PER_FACTOR", 3)),
+        prefer_observed=bool(getattr(cfg, "IVNC_IV_PREFER_OBSERVED", True)),
+        allow_factor_fallback=bool(getattr(cfg, "IVNC_IV_ALLOW_FACTOR_FALLBACK", False)),
+        min_factor_share=float(getattr(cfg, "IVNC_IV_MIN_FACTOR_SHARE", 0.0)),
+        max_outcome_abs_corr=float(getattr(cfg, "IVNC_IV_MAX_OUTCOME_ABS_CORR", np.inf)),
+        outcome_corr_min_obs=int(getattr(cfg, "IVNC_IV_OUTCOME_CORR_MIN_OBS", 20)),
+        blocklist=getattr(cfg, "IVNC_IV_BLOCKLIST", []),
+        blocklist_regex=getattr(cfg, "IVNC_IV_BLOCKLIST_REGEX", []),
     )
+    if iv_candidate_cap > 0:
+        iv_candidate_cols = list(iv_candidate_cols)[:iv_candidate_cap]
+    if not iv_candidate_cols:
+        iv_candidate_cols = _build_iv_candidate_series(
+            merged=merged,
+            treatment_cols=all_treat_cols,
+            outcome_cols=all_outcome_cols,
+            factor_cols=factor_cols,
+            max_candidate_series=iv_candidate_cap,
+        )
+        candidate_metadata = None
     if not iv_candidate_cols:
         iv_candidate_cols = [str(col) for col in factor_cols if str(col) in merged.columns]
+        candidate_metadata = None
     if not iv_candidate_cols:
         write_empty_outputs()
         return out
@@ -4344,6 +4397,7 @@ def run_iv_nc_discovery_artifacts(
         top_k=int(getattr(cfg, "IVNC_TOPK_IV_PER_TREATMENT", 5)),
         row_id_col="row_id",
         treatment_fragility=treatment_fragility,
+        candidate_metadata=candidate_metadata,
     )
 
     nc_rows_all: list[dict[str, Any]] = []
@@ -4675,6 +4729,7 @@ def main() -> int:
         merged=merged,
         question_map=question_map,
         factor_cols=factor_cols_active,
+        irf=irf,
     )
     iv_candidates_df = iv_nc_outputs["iv_candidates"]
     iv_checklist_df = iv_nc_outputs["iv_checklist"]
